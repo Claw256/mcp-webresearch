@@ -86,6 +86,29 @@ The server maintains a research session that includes:
 
 For the best results, if you choose not to use the `agentic-research` prompt when doing your research, it may be helpful to suggest high-quality sources for Claude to use when researching general topics. For example, you could prompt `news today from reuters or AP` instead of `news today`.
 
+## Project Structure
+
+The codebase is organized into modular components for better maintainability:
+
+```
+src/
+├── config/         # Configuration and constants
+│   └── index.ts    # Tool definitions, prompts, and constants
+├── handlers/       # MCP request handlers
+│   ├── tools.ts    # Web research tool handlers
+│   ├── resources.ts # Resource management handlers
+│   └── prompts.ts  # Research prompt handlers
+├── services/       # Core functionality
+│   ├── browser.ts  # Browser automation
+│   ├── screenshot.ts # Screenshot handling
+│   ├── content.ts  # HTML to Markdown conversion
+│   └── session.ts  # Research session management
+├── types/         # TypeScript interfaces
+│   └── index.ts    # Type definitions
+└── utils/         # Helper functions
+    └── index.ts    # Utility functions
+```
+
 ## Problems
 
 This is very much pre-alpha code. And it is also AIGC, so expect bugs.
@@ -100,26 +123,35 @@ tail -n 20 -f ~/Library/Logs/Claude/mcp*.log
 
 ```bash
 # Install dependencies
-pnpm install
+npm install
 
 # Build the project
-pnpm build
+npm run build
 
 # Watch for changes
-pnpm watch
+npm run dev
 
-# Run in development mode
-pnpm dev
+# Clean build artifacts
+npm run clean
 ```
 
-## Requirements
+### Development Requirements
 
 - Node.js >= 18
 - Playwright (automatically installed as a dependency)
+- TypeScript 5.3+
+- MCP SDK 1.1.0+
+
+### Key Dependencies
+
+- `@modelcontextprotocol/sdk`: ^1.1.0 - MCP server implementation
+- `playwright`: ^1.40.1 - Browser automation
+- `turndown`: ^7.1.2 - HTML to Markdown conversion
 
 ## Verified Platforms
 
 - [x] macOS
+- [x] Windows
 - [ ] Linux
 
 ## License
@@ -128,4 +160,4 @@ MIT
 
 ## Author
 
-[mzxrai](https://github.com/mzxrai) 
+[mzxrai](https://github.com/mzxrai)
