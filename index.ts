@@ -17,15 +17,6 @@ import {
     TextContent,
     ImageContent,
 } from "@modelcontextprotocol/sdk/types.js";
-import { z } from 'zod';
-
-// Custom error class for MCP server errors
-class McpServerError extends McpError {
-    constructor(code: ErrorCode, message: string, data?: any) {
-        super(code, message, data);
-        this.name = "McpServerError";
-    }
-}
 
 // Web scraping and content processing dependencies
 import { chromium, Browser, Page } from 'playwright';
@@ -96,37 +87,29 @@ interface ResearchSession {
 
 // Screenshot management functions
 async function saveScreenshot(screenshot: string, title: string): Promise<string> {
-    try {
-        // Convert screenshot from base64 to buffer
-        const buffer = Buffer.from(screenshot, 'base64');
+    // Convert screenshot from base64 to buffer
+    const buffer = Buffer.from(screenshot, 'base64');
 
-        // Check size before saving
-        const MAX_SIZE = 5 * 1024 * 1024;  // 5MB
-        if (buffer.length > MAX_SIZE) {
-            throw new McpServerError(
-                ErrorCode.InvalidRequest,
-                `Screenshot too large: ${Math.round(buffer.length / (1024 * 1024))}MB exceeds ${MAX_SIZE / (1024 * 1024)}MB limit`
-            );
-        }
-
-        // Generate a safe filename
-        const timestamp = new Date().getTime();
-        const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-        const filename = `${safeTitle}-${timestamp}.png`;
-        const filepath = path.join(SCREENSHOTS_DIR, filename);
-
-        // Save the validated screenshot
-        await fs.promises.writeFile(filepath, buffer);
-
-        // Return the filepath to the saved screenshot
-        return filepath;
-    } catch (error: any) {
-        console.error("Error saving screenshot:", error);
-        throw new McpServerError(
-            ErrorCode.InternalError,
-            `Failed to save screenshot: ${error.message || 'Unknown error'}`
+    // Check size before saving
+    const MAX_SIZE = 5 * 1024 * 1024;  // 5MB
+    if (buffer.length > MAX_SIZE) {
+        throw new McpError(
+            ErrorCode.InvalidRequest,
+            `Screenshot too large: ${Math.round(buffer.length / (1024 * 1024))}MB exceeds ${MAX_SIZE / (1024 * 1024)}MB limit`
         );
     }
+
+    // Generate a safe filename
+    const timestamp = new Date().getTime();
+    const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const filename = `${safeTitle}-${timestamp}.png`;
+    const filepath = path.join(SCREENSHOTS_DIR, filename);
+
+    // Save the validated screenshot
+    await fs.promises.writeFile(filepath, buffer);
+
+    // Return the filepath to the saved screenshot
+    return filepath;
 }
 
 // Cleanup function to remove all screenshots from disk
@@ -140,12 +123,8 @@ async function cleanupScreenshots(): Promise<void> {
 
         // Remove the directory itself
         await fs.promises.rmdir(SCREENSHOTS_DIR);
-    } catch (error: any) {
+    } catch (error) {
         console.error('Error cleaning up screenshots:', error);
-         throw new McpServerError(
-            ErrorCode.InternalError,
-            `Failed to cleanup screenshots: ${error.message || 'Unknown error'}`
-        );
     }
 }
 
@@ -263,6 +242,150 @@ function addResult(result: ResearchResult): void {
     currentSession.lastUpdated = new Date().toISOString();
 }
 
+/**
+ * Specifically handles Google's consent dialog in regions that require it
+ * @param page - Playwright Page object
+ */
+async function dismissGoogleConsent(page: Page): Promise<void> {
+    // Regions that commonly show cookie/consent banners
+    const regions = [
+        // Europe
+        '.google.de', '.google.fr', '.google.co.uk',
+        '.google.it', '.google.es', '.google.nl',
+        '.google.pl', '.google.ie', '.google.dk',
+        '.google.no', '.google.se', '.google.fi',
+        '.google.at', '.google.ch', '.google.be',
+        '.google.pt', '.google.gr', '.google.com.tr',
+        // Asia Pacific
+        '.google.co.id', '.google.com.sg', '.google.co.th',
+        '.google.com.my', '.google.com.ph', '.google.com.au',
+        '.google.co.nz', '.google.com.vn',
+        // Generic domains
+        '.google.com', '.google.co'
+    ];
+
+    try {
+        // Get current URL
+        const currentUrl = page.url();
+
+        // Skip consent check if not in a supported region
+        if (!regions.some(domain => currentUrl.includes(domain))) {
+            return;
+        }
+
+        // Quick check for consent dialog existence
+        const hasConsent = await page.$(
+            'form:has(button[aria-label]), div[aria-modal="true"], ' +
+            // Common dialog containers
+            'div[role="dialog"], div[role="alertdialog"], ' +
+            // Common cookie/consent specific elements
+            'div[class*="consent"], div[id*="consent"], ' +
+            'div[class*="cookie"], div[id*="cookie"], ' +
+            // Common modal/popup classes
+            'div[class*="modal"]:has(button), div[class*="popup"]:has(button), ' +
+            // Common banner patterns
+            'div[class*="banner"]:has(button), div[id*="banner"]:has(button)'
+        ).then(Boolean);
+
+        // If no consent dialog is found, return
+        if (!hasConsent) {
+            return;
+        }
+
+        // Handle the consent dialog using common consent button patterns
+        await page.evaluate(() => {
+            const consentPatterns = {
+                // Common accept button text patterns across languages
+                text: [
+                    // English
+                    'accept all', 'agree', 'consent',
+                    // German
+                    'alle akzeptieren', 'ich stimme zu', 'zustimmen',
+                    // French
+                    'tout accepter', 'j\'accepte',
+                    // Spanish
+                    'aceptar todo', 'acepto',
+                    // Italian
+                    'accetta tutto', 'accetto',
+                    // Portuguese
+                    'aceitar tudo', 'concordo',
+                    // Dutch
+                    'alles accepteren', 'akkoord',
+                    // Polish
+                    'zaakceptuj wszystko', 'zgadzam się',
+                    // Swedish
+                    'godkänn alla', 'godkänn',
+                    // Danish
+                    'accepter alle', 'accepter',
+                    // Norwegian
+                    'godta alle', 'godta',
+                    // Finnish
+                    'hyväksy kaikki', 'hyväksy',
+                    // Indonesian
+                    'terima semua', 'setuju', 'saya setuju',
+                    // Malay
+                    'terima semua', 'setuju',
+                    // Thai
+                    'ยอมรับทั้งหมด', 'ยอมรับ',
+                    // Vietnamese
+                    'chấp nhận tất cả', 'đồng ý',
+                    // Filipino/Tagalog
+                    'tanggapin lahat', 'sumang-ayon',
+                    // Japanese
+                    'すべて同意する', '同意する',
+                    // Korean
+                    '모두 동의', '동의'
+                ],
+                // Common aria-label patterns
+                ariaLabels: [
+                    'consent', 'accept', 'agree',
+                    'cookie', 'privacy', 'terms',
+                    'persetujuan', 'setuju',  // Indonesian
+                    'ยอมรับ',  // Thai
+                    'đồng ý',  // Vietnamese
+                    '同意'     // Japanese/Chinese
+                ]
+            };
+
+            // Finds the accept button by text or aria-label
+            const findAcceptButton = () => {
+                // Get all buttons on the page
+                const buttons = Array.from(document.querySelectorAll('button'));
+
+                // Find the accept button
+                return buttons.find(button => {
+                    // Get the text content and aria-label of the button
+                    const text = button.textContent?.toLowerCase() || '';
+                    const label = button.getAttribute('aria-label')?.toLowerCase() || '';
+
+                    // Check for matching text patterns
+                    const hasMatchingText = consentPatterns.text.some(pattern =>
+                        text.includes(pattern)
+                    );
+
+                    // Check for matching aria-labels
+                    const hasMatchingLabel = consentPatterns.ariaLabels.some(pattern =>
+                        label.includes(pattern)
+                    );
+
+                    // Return true if either text or aria-label matches
+                    return hasMatchingText || hasMatchingLabel;
+                });
+            };
+
+            // Find the accept button
+            const acceptButton = findAcceptButton();
+
+            // If an accept button is found, click it
+            if (acceptButton) {
+                acceptButton.click();
+            }
+        });
+    } catch (error) {
+        console.log('Consent handling failed:', error);
+    }
+}
+
 // Safe page navigation with error handling and bot detection
 async function safePageNavigation(page: Page, url: string): Promise<void> {
     try {
@@ -304,7 +427,7 @@ async function safePageNavigation(page: Page, url: string): Promise<void> {
             const botProtectionExists = [
                 '#challenge-running',     // Cloudflare
                 '#cf-challenge-running',  // Cloudflare
-                '#px-captcha',           // PerimeterX
+                '#px-captcha',            // PerimeterX
                 '#ddos-protection',       // Various
                 '#waf-challenge-html'     // Various WAFs
             ].some(selector => document.querySelector(selector));
@@ -342,7 +465,7 @@ async function safePageNavigation(page: Page, url: string): Promise<void> {
         }
 
         // If the page contains insufficient content, throw an error
-        if (validation.wordCount < 20) {
+        if (validation.wordCount < 10) {
             throw new Error('Page contains insufficient content');
         }
 
@@ -442,7 +565,7 @@ async function takeScreenshotWithSizeLimit(page: Page): Promise<string> {
 const server: Server = new Server(
     {
         name: "webresearch",  // Server name identifier
-        version: "0.1.6",     // Server version number
+        version: "0.1.7",     // Server version number
     },
     {
         capabilities: {
@@ -694,316 +817,297 @@ function isValidUrl(urlString: string): boolean {
 
         // Only allow HTTP and HTTPS protocols for security
         return url.protocol === 'http:' || url.protocol === 'https:';
-    // Tool request handler for executing research operations
-    server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolResult> => {
-        // Initialize browser for tool operations
-        const page = await ensureBrowser();
-    
-        try {
-            switch (request.params.name) {
-                // Handle Google search operations
-                case "search_google": {
-                    // Define schema for search_google input
-                    const schema = z.object({
-                        query: z.string().min(1, "Query cannot be empty"),
-                    });
-    
-                    // Validate input against schema
-                    const { query } = schema.parse(request.params.arguments);
-    
-                    try {
-                        // Execute search with retry mechanism
-                        const results = await withRetry(async () => {
-                            // Step 1: Navigate to Google search page
-                            await safePageNavigation(page, 'https://www.google.com');
-    
-                            // Step 2: Find and interact with search input
-                            await withRetry(async () => {
-                                // Wait for any search input element to appear
-                                await Promise.race([
-                                    // Try multiple possible selectors for search input
-                                    page.waitForSelector('input[name="q"]', { timeout: 5000 }),
-                                    page.waitForSelector('textarea[name="q"]', { timeout: 5000 }),
-                                    page.waitForSelector('input[type="text"]', { timeout: 5000 })
-                                ]).catch(() => {
-                                    throw new Error('Search input not found - no matching selectors');
-                                });
-    
-                                // Find the actual search input element
-                                const searchInput = await page.$('input[name="q"]') ||
-                                    await page.$('textarea[name="q"]') ||
-                                    await page.$('input[type="text"]');
-    
-                                // Verify search input was found
-                                if (!searchInput) {
-                                    throw new Error('Search input element not found after waiting');
-                                }
-    
-                                // Step 3: Enter search query
-                                await searchInput.click({ clickCount: 3 });  // Select all existing text
-                                await searchInput.press('Backspace');        // Clear selected text
-                                await searchInput.type(query);               // Type new query
-                            }, 3, 2000);  // Allow 3 retries with 2s delay
-    
-                            // Step 4: Submit search and wait for results
-                            await withRetry(async () => {
-                                await Promise.all([
-                                    page.keyboard.press('Enter'),
-                                    page.waitForLoadState('networkidle', { timeout: 15000 }),
-                                ]);
-                            });
-    
-                            // Step 5: Extract search results
-                            const searchResults = await withRetry(async () => {
-                                const results = await page.evaluate(() => {
-                                    // Find all search result containers
-                                    const elements = document.querySelectorAll('div.g');
-                                    if (!elements || elements.length === 0) {
-                                        throw new Error('No search results found');
-                                    }
-    
-                                    // Extract data from each result
-                                    return Array.from(elements).map((el) => {
-                                        // Find required elements within result container
-                                        const titleEl = el.querySelector('h3');            // Title element
-                                        const linkEl = el.querySelector('a');              // Link element
-                                        const snippetEl = el.querySelector('div.VwiC3b');  // Snippet element
-    
-                                        // Skip results missing required elements
-                                        if (!titleEl || !linkEl || !snippetEl) {
-                                            return null;
-                                        }
-    
-                                        // Return structured result data
-                                        return {
-                                            title: titleEl.textContent || '',        // Result title
-                                            url: linkEl.getAttribute('href') || '',  // Result URL
-                                            snippet: snippetEl.textContent || '',    // Result description
-                                        };
-                                    }).filter(result => result !== null);  // Remove invalid results
-                                });
-    
-                                // Verify we found valid results
-                                if (!results || results.length === 0) {
-                                    throw new Error('No valid search results found');
-                                }
-    
-                                // Return compiled list of results
-                                return results;
-                            });
-    
-                            // Step 6: Store results in session
-                            searchResults.forEach((result) => {
-                                addResult({
-                                    url: result.url,
-                                    title: result.title,
-                                    content: result.snippet,
-                                    timestamp: new Date().toISOString(),
-                                });
-                            });
-    
-                            // Return compiled list of results
-                            return searchResults;
+    } catch {
+        // Return false for any invalid URL format
+        return false;
+    }
+}
+
+// Define result type for tool operations
+type ToolResult = {
+    content: (TextContent | ImageContent)[];  // Array of text or image content
+    isError?: boolean;                        // Optional error flag
+};
+
+// Tool request handler for executing research operations
+server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolResult> => {
+    // Initialize browser for tool operations
+    const page = await ensureBrowser();
+
+    switch (request.params.name) {
+        // Handle Google search operations
+        case "search_google": {
+            // Extract search query from request parameters
+            const { query } = request.params.arguments as { query: string };
+
+            try {
+                // Execute search with retry mechanism
+                const results = await withRetry(async () => {
+                    // Step 1: Navigate to Google search page
+                    await safePageNavigation(page, 'https://www.google.com');
+                    await dismissGoogleConsent(page);
+
+                    // Step 2: Find and interact with search input
+                    await withRetry(async () => {
+                        // Wait for any search input element to appear
+                        await Promise.race([
+                            // Try multiple possible selectors for search input
+                            page.waitForSelector('input[name="q"]', { timeout: 5000 }),
+                            page.waitForSelector('textarea[name="q"]', { timeout: 5000 }),
+                            page.waitForSelector('input[type="text"]', { timeout: 5000 })
+                        ]).catch(() => {
+                            throw new Error('Search input not found - no matching selectors');
                         });
-    
-                        // Step 7: Return formatted results
-                        return {
-                            content: [{
-                                type: "text",
-                                text: JSON.stringify(results, null, 2)  // Pretty-print JSON results
-                            }]
-                        };
-                    } catch (error: any) {
-                        // Handle and format search errors
-                        return {
-                            content: [{
-                                type: "text",
-                                text: `Failed to perform search: ${error.message || 'Unknown error'}`
-                            }],
-                            isError: true
-                        };
-                    }
-                }
-    
-                // Handle webpage visit and content extraction
-                case "visit_page": {
-                    // Define schema for visit_page input
-                    const schema = z.object({
-                        url: z.string().url("Invalid URL format"),
-                        takeScreenshot: z.boolean().optional(),
-                    });
-    
-                    // Validate input against schema
-                    const { url, takeScreenshot } = schema.parse(request.params.arguments);
-    
-    
-                    // Step 1: Validate URL format and security
-                    if (!isValidUrl(url)) {
-                        return {
-                            content: [{
-                                type: "text" as const,
-                                text: `Invalid URL: ${url}. Only http and https protocols are supported.`
-                            }],
-                            isError: true
-                        };
-                    }
-    
-                    try {
-                        // Step 2: Visit page and extract content with retry mechanism
-                        const result = await withRetry(async () => {
-                            // Navigate to target URL safely
-                            await safePageNavigation(page, url);
-                            const title = await page.title();
-    
-                            // Step 3: Extract and process page content
-                            const content = await withRetry(async () => {
-                                // Convert page content to markdown
-                                const extractedContent = await extractContentAsMarkdown(page);
-    
-                                // If no content is extracted, throw an error
-                                if (!extractedContent) {
-                                    throw new Error('Failed to extract content');
-                                }
-    
-                                // Return the extracted content
-                                return extractedContent;
-                            });
-    
-                            // Step 4: Create result object with page data
-                            const pageResult: ResearchResult = {
-                                url,      // Original URL
-                                title,    // Page title
-                                content,  // Markdown content
-                                timestamp: new Date().toISOString(),  // Capture time
-                            };
-    
-                            // Step 5: Take screenshot if requested
-                            let screenshotUri: string | undefined;
-                            if (takeScreenshot) {
-                                // Capture and process screenshot
-                                const screenshot = await takeScreenshotWithSizeLimit(page);
-                                pageResult.screenshotPath = await saveScreenshot(screenshot, title);
-    
-                                // Get the index for the resource URI
-                                const resultIndex = currentSession ? currentSession.results.length : 0;
-                                screenshotUri = `research://screenshots/${resultIndex}`;
-    
-                                // Notify clients about new screenshot resource
-                                server.notification({
-                                    method: "notifications/resources/list_changed"
-                                });
-                            }
-    
-                            // Step 6: Store result in session
-                            addResult(pageResult);
-                            return { pageResult, screenshotUri };
-                        });
-    
-                        // Step 7: Return formatted result with screenshot URI if taken
-                        const response: ToolResult = {
-                            content: [{
-                                type: "text" as const,
-                                text: JSON.stringify({
-                                    url: result.pageResult.url,
-                                    title: result.pageResult.title,
-                                    content: result.pageResult.content,
-                                    timestamp: result.pageResult.timestamp,
-                                    screenshot: result.screenshotUri ? `View screenshot via *MCP Resources* (Paperclip icon) @ URI: ${result.screenshotUri}` : undefined
-                                }, null, 2)
-                            }]
-                        };
-    
-                        return response;
-                    } catch (error: any) {
-                        // Handle and format page visit errors
-                        return {
-                            content: [{
-                                type: "text" as const,
-                                text: `Failed to visit page: ${error.message || 'Unknown error'}`
-                            }],
-                            isError: true
-                        };
-                    }
-                }
-    
-                // Handle standalone screenshot requests
-                case "take_screenshot": {
-                    try {
-                        // Step 1: Capture screenshot with retry mechanism
-                        const screenshot = await withRetry(async () => {
-                            // Take and optimize screenshot with default size limits
-                            return await takeScreenshotWithSizeLimit(page);
-                        });
-    
-                        // Step 2: Initialize session if needed
-                        if (!currentSession) {
-                            currentSession = {
-                                query: "Screenshot Session",            // Session identifier
-                                results: [],                            // Empty results array
-                                lastUpdated: new Date().toISOString(),  // Current timestamp
-                            };
+
+                        // Find the actual search input element
+                        const searchInput = await page.$('input[name="q"]') ||
+                            await page.$('textarea[name="q"]') ||
+                            await page.$('input[type="text"]');
+
+                        // Verify search input was found
+                        if (!searchInput) {
+                            throw new Error('Search input element not found after waiting');
                         }
-    
-                        // Step 3: Get current page information
-                        const pageUrl = await page.url();      // Current page URL
-                        const pageTitle = await page.title();  // Current page title
-    
-                        // Step 4: Save screenshot to disk
-                        const screenshotPath = await saveScreenshot(screenshot, pageTitle || 'untitled');
-    
-                        // Step 5: Create and store screenshot result
-                        const resultIndex = currentSession ? currentSession.results.length : 0;
-                        addResult({
-                            url: pageUrl,
-                            title: pageTitle || "Untitled Page",  // Fallback title if none available
-                            content: "Screenshot taken",          // Simple content description
-                            timestamp: new Date().toISOString(),  // Capture time
-                            screenshotPath                        // Path to screenshot file
+
+                        // Step 3: Enter search query
+                        await searchInput.click({ clickCount: 3 });  // Select all existing text
+                        await searchInput.press('Backspace');        // Clear selected text
+                        await searchInput.type(query);               // Type new query
+                    }, 3, 2000);  // Allow 3 retries with 2s delay
+
+                    // Step 4: Submit search and wait for results
+                    await withRetry(async () => {
+                        await Promise.all([
+                            page.keyboard.press('Enter'),
+                            page.waitForLoadState('networkidle', { timeout: 15000 }),
+                        ]);
+                    });
+
+                    // Step 5: Extract search results
+                    const searchResults = await withRetry(async () => {
+                        const results = await page.evaluate(() => {
+                            // Find all search result containers
+                            const elements = document.querySelectorAll('div.g');
+                            if (!elements || elements.length === 0) {
+                                throw new Error('No search results found');
+                            }
+
+                            // Extract data from each result
+                            return Array.from(elements).map((el) => {
+                                // Find required elements within result container
+                                const titleEl = el.querySelector('h3');            // Title element
+                                const linkEl = el.querySelector('a');              // Link element
+                                const snippetEl = el.querySelector('div.VwiC3b');  // Snippet element
+
+                                // Skip results missing required elements
+                                if (!titleEl || !linkEl || !snippetEl) {
+                                    return null;
+                                }
+
+                                // Return structured result data
+                                return {
+                                    title: titleEl.textContent || '',        // Result title
+                                    url: linkEl.getAttribute('href') || '',  // Result URL
+                                    snippet: snippetEl.textContent || '',    // Result description
+                                };
+                            }).filter(result => result !== null);  // Remove invalid results
                         });
-    
-                        // Step 6: Notify clients about new screenshot resource
+
+                        // Verify we found valid results
+                        if (!results || results.length === 0) {
+                            throw new Error('No valid search results found');
+                        }
+
+                        // Return compiled list of results
+                        return results;
+                    });
+
+                    // Step 6: Store results in session
+                    searchResults.forEach((result) => {
+                        addResult({
+                            url: result.url,
+                            title: result.title,
+                            content: result.snippet,
+                            timestamp: new Date().toISOString(),
+                        });
+                    });
+
+                    // Return compiled list of results
+                    return searchResults;
+                });
+
+                // Step 7: Return formatted results
+                return {
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify(results, null, 2)  // Pretty-print JSON results
+                    }]
+                };
+            } catch (error) {
+                // Handle and format search errors
+                return {
+                    content: [{
+                        type: "text",
+                        text: `Failed to perform search: ${(error as Error).message}`
+                    }],
+                    isError: true
+                };
+            }
+        }
+
+        // Handle webpage visit and content extraction
+        case "visit_page": {
+            // Extract URL and screenshot flag from request
+            const { url, takeScreenshot } = request.params.arguments as {
+                url: string;                    // Target URL to visit
+                takeScreenshot?: boolean;       // Optional screenshot flag
+            };
+
+            // Step 1: Validate URL format and security
+            if (!isValidUrl(url)) {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Invalid URL: ${url}. Only http and https protocols are supported.`
+                    }],
+                    isError: true
+                };
+            }
+
+            try {
+                // Step 2: Visit page and extract content with retry mechanism
+                const result = await withRetry(async () => {
+                    // Navigate to target URL safely
+                    await safePageNavigation(page, url);
+                    const title = await page.title();
+
+                    // Step 3: Extract and process page content
+                    const content = await withRetry(async () => {
+                        // Convert page content to markdown
+                        const extractedContent = await extractContentAsMarkdown(page);
+
+                        // If no content is extracted, throw an error
+                        if (!extractedContent) {
+                            throw new Error('Failed to extract content');
+                        }
+
+                        // Return the extracted content
+                        return extractedContent;
+                    });
+
+                    // Step 4: Create result object with page data
+                    const pageResult: ResearchResult = {
+                        url,      // Original URL
+                        title,    // Page title
+                        content,  // Markdown content
+                        timestamp: new Date().toISOString(),  // Capture time
+                    };
+
+                    // Step 5: Take screenshot if requested
+                    let screenshotUri: string | undefined;
+                    if (takeScreenshot) {
+                        // Capture and process screenshot
+                        const screenshot = await takeScreenshotWithSizeLimit(page);
+                        pageResult.screenshotPath = await saveScreenshot(screenshot, title);
+
+                        // Get the index for the resource URI
+                        const resultIndex = currentSession ? currentSession.results.length : 0;
+                        screenshotUri = `research://screenshots/${resultIndex}`;
+
+                        // Notify clients about new screenshot resource
                         server.notification({
                             method: "notifications/resources/list_changed"
                         });
-    
-                        // Step 7: Return success message with resource URI
-                        const resourceUri = `research://screenshots/${resultIndex}`;
-                        return {
-                            content: [{
-                                type: "text" as const,
-                                text: `Screenshot taken successfully. You can view it via *MCP Resources* (Paperclip icon) @ URI: ${resourceUri}`
-                            }]
-                        };
-                    } catch (error: any) {
-                        // Handle and format screenshot errors
-                        return {
-                            content: [{
-                                type: "text" as const,
-                                text: `Failed to take screenshot: ${error.message || 'Unknown error'}`
-                            }],
-                            isError: true
-                        };
                     }
-                }
-    
-                // Handle unknown tool requests
-                default:
-                    throw new McpServerError(
-                        ErrorCode.MethodNotFound,
-                        `Unknown tool: ${request.params.name}`
-                    );
+
+                    // Step 6: Store result in session
+                    addResult(pageResult);
+                    return { pageResult, screenshotUri };
+                });
+
+                // Step 7: Return formatted result with screenshot URI if taken
+                const response: ToolResult = {
+                    content: [{
+                        type: "text" as const,
+                        text: JSON.stringify({
+                            url: result.pageResult.url,
+                            title: result.pageResult.title,
+                            content: result.pageResult.content,
+                            timestamp: result.pageResult.timestamp,
+                            screenshot: result.screenshotUri ? `View screenshot via *MCP Resources* (Paperclip icon) @ URI: ${result.screenshotUri}` : undefined
+                        }, null, 2)
+                    }]
+                };
+
+                return response;
+            } catch (error) {
+                // Handle and format page visit errors
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Failed to visit page: ${(error as Error).message}`
+                    }],
+                    isError: true
+                };
             }
-        } catch (error: any) {
-            console.error("Error during tool execution:", error);
-            return {
-                content: [{
-                    type: "text",
-                    text: `Tool execution failed: ${error.message || 'Unknown error'}`
-                }],
-                isError: true
-            };
         }
-    });
+
+        // Handle standalone screenshot requests
+        case "take_screenshot": {
+            try {
+                // Step 1: Capture screenshot with retry mechanism
+                const screenshot = await withRetry(async () => {
+                    // Take and optimize screenshot with default size limits
+                    return await takeScreenshotWithSizeLimit(page);
+                });
+
+                // Step 2: Initialize session if needed
+                if (!currentSession) {
+                    currentSession = {
+                        query: "Screenshot Session",            // Session identifier
+                        results: [],                            // Empty results array
+                        lastUpdated: new Date().toISOString(),  // Current timestamp
+                    };
+                }
+
+                // Step 3: Get current page information
+                const pageUrl = await page.url();      // Current page URL
+                const pageTitle = await page.title();  // Current page title
+
+                // Step 4: Save screenshot to disk
+                const screenshotPath = await saveScreenshot(screenshot, pageTitle || 'untitled');
+
+                // Step 5: Create and store screenshot result
+                const resultIndex = currentSession ? currentSession.results.length : 0;
+                addResult({
+                    url: pageUrl,
+                    title: pageTitle || "Untitled Page",  // Fallback title if none available
+                    content: "Screenshot taken",          // Simple content description
+                    timestamp: new Date().toISOString(),  // Capture time
+                    screenshotPath                        // Path to screenshot file
+                });
+
+                // Step 6: Notify clients about new screenshot resource
+                server.notification({
+                    method: "notifications/resources/list_changed"
+                });
+
+                // Step 7: Return success message with resource URI
+                const resourceUri = `research://screenshots/${resultIndex}`;
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Screenshot taken successfully. You can view it via *MCP Resources* (Paperclip icon) @ URI: ${resourceUri}`
+                    }]
+                };
+            } catch (error) {
+                // Handle and format screenshot errors
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Failed to take screenshot: ${(error as Error).message}`
+                    }],
+                    isError: true
                 };
             }
         }
