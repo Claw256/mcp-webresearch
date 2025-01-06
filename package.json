@@ -1,46 +1,40 @@
 {
   "name": "@mzxrai/mcp-webresearch",
   "version": "0.1.7",
-  "description": "MCP server for web research",
-  "license": "MIT",
-  "author": "mzxrai",
-  "homepage": "https://github.com/mzxrai/mcp-webresearch",
-  "bugs": "https://github.com/mzxrai/mcp-webresearch/issues",
+  "description": "MCP server for web research capabilities",
   "type": "module",
+  "main": "build/index.js",
   "bin": {
-    "mcp-server-webresearch": "dist/index.js"
+    "mcp-webresearch": "build/index.js"
   },
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "build": "tsc && shx chmod +x dist/*.js",
-    "prepare": "pnpm run build",
-    "postinstall": "playwright install chromium",
-    "watch": "tsc --watch",
-    "dev": "tsx watch index.ts"
-  },
-  "publishConfig": {
-    "access": "public"
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "start": "node build/index.js",
+    "dev": "tsc-watch --onSuccess \"node build/index.js\"",
+    "clean": "rimraf build",
+    "prebuild": "npm run clean"
   },
   "keywords": [
     "mcp",
-    "model-context-protocol",
     "web-research",
     "ai",
-    "web-scraping"
+    "automation"
   ],
+  "author": "MzxRai",
+  "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.0.1",
-    "playwright": "^1.49.0",
-    "turndown": "^7.1.2",
-    "zod": "^3.24.1"
+    "@modelcontextprotocol/sdk": "^1.1.0",
+    "playwright": "^1.40.1",
+    "turndown": "^7.1.2"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
+    "@types/node": "22.10.5",
     "@types/turndown": "^5.0.4",
-    "shx": "^0.3.4",
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.2"
+    "rimraf": "6.0.1",
+    "typescript": "^5.3.3",
+    "tsc-watch": "^6.0.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
