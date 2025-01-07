@@ -1,5 +1,12 @@
 import { chromium, Browser, Page, BrowserContext } from 'playwright';
-import { BROWSER_CONFIG, CONSENT_REGIONS, SECURITY_CONFIG, SERVER_CONFIG } from '../config/index.js';
+import {
+    BROWSER_CONFIG,
+    CONSENT_REGIONS,
+    SECURITY_CONFIG,
+    SERVER_CONFIG,
+    CIRCUIT_BREAKER_CONFIG,
+    PERFORMANCE_CONFIG
+} from '../config/index.js';
 import { Logger } from '../utils/logger.js';
 
 interface ValidationResult {
@@ -12,6 +19,15 @@ interface BrowserInstance {
     context: BrowserContext;
     page: Page;
     lastUsed: number;
+    memoryUsage: number;
+    failureCount: number;
+}
+
+interface CircuitBreaker {
+    state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+    failures: number;
+    lastFailure: number;
+    lastSuccess: number;
 }
 
 interface PageValidation {
@@ -20,16 +36,31 @@ interface PageValidation {
     suspiciousTitle: boolean;
     title: string;
     hasErrorContent: boolean;
+    performanceMetrics: {
+        loadTime: number;
+        resourceCount: number;
+        memoryUsage: number;
+    };
 }
 
 class BrowserPool {
     private static instance: BrowserPool;
     private pool: BrowserInstance[] = [];
     private logger: Logger;
+    private circuitBreaker: CircuitBreaker;
+    private requestQueue: Array<{ resolve: (page: Page) => void; reject: (error: Error) => void; timestamp: number }> = [];
 
     private constructor() {
         this.logger = new Logger('BrowserPool');
+        this.circuitBreaker = {
+            state: 'CLOSED',
+            failures: 0,
+            lastFailure: 0,
+            lastSuccess: Date.now()
+        };
         this.startMaintenanceInterval();
+        this.startCircuitBreakerMonitoring();
+        this.startPerformanceMonitoring();
     }
 
     static getInstance(): BrowserPool {
@@ -48,7 +79,21 @@ class BrowserPool {
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-gpu',
-                    '--disable-software-rasterizer'
+                    '--disable-software-rasterizer',
+                    `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`,
+                    '--disable-extensions',
+                    '--disable-background-networking',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-breakpad',
+                    '--disable-component-extensions-with-background-pages',
+                    '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-renderer-backgrounding',
+                    '--enable-features=NetworkService,NetworkServiceInProcess',
+                    '--force-color-profile=srgb',
+                    '--metrics-recording-only',
+                    '--mute-audio'
                 ]
             });
 
@@ -56,18 +101,61 @@ class BrowserPool {
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 viewport: { width: 1280, height: 800 },
                 ignoreHTTPSErrors: true,
-                javaScriptEnabled: true
+                javaScriptEnabled: true,
+                bypassCSP: true,
+                extraHTTPHeaders: {
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
             });
 
+            // Set timeouts
             context.setDefaultTimeout(BROWSER_CONFIG.navigationTimeout);
             context.setDefaultNavigationTimeout(BROWSER_CONFIG.navigationTimeout);
 
+            // Configure request handling
+            await context.route('**/*', async (route) => {
+                const request = route.request();
+                const resourceType = request.resourceType();
+
+                // Block unnecessary resources
+                if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                    return route.abort();
+                }
+
+                // Set timeout for resource requests
+                const timeout = setTimeout(() => {
+                    route.abort('timedout');
+                }, BROWSER_CONFIG.resourceTimeout);
+
+                try {
+                    await route.continue();
+                } catch (error) {
+                    this.logger.error('Resource request failed:', error);
+                } finally {
+                    clearTimeout(timeout);
+                }
+            });
+
             const page = await context.newPage();
+
+            // Configure error handling
+            page.on('pageerror', (error) => {
+                this.logger.error('Page error:', error);
+            });
+
+            page.on('console', (msg) => {
+                if (msg.type() === 'error' || msg.type() === 'warning') {
+                    this.logger.warn('Console message:', msg.text());
+                }
+            });
+
             return {
                 browser,
                 context,
                 page,
-                lastUsed: Date.now()
+                lastUsed: Date.now(),
+                memoryUsage: 0,
+                failureCount: 0
             };
         } catch (error) {
             this.logger.error('Failed to create browser instance:', error);
@@ -75,13 +163,107 @@ class BrowserPool {
         }
     }
 
+    private async updateCircuitBreaker(success: boolean) {
+        const now = Date.now();
+
+        if (success) {
+            if (this.circuitBreaker.state === 'HALF_OPEN') {
+                this.circuitBreaker.state = 'CLOSED';
+                this.circuitBreaker.failures = 0;
+            }
+            this.circuitBreaker.lastSuccess = now;
+            return;
+        }
+
+        this.circuitBreaker.failures++;
+        this.circuitBreaker.lastFailure = now;
+
+        if (this.circuitBreaker.failures >= CIRCUIT_BREAKER_CONFIG.failureThreshold) {
+            this.circuitBreaker.state = 'OPEN';
+            this.logger.warn('Circuit breaker opened due to consecutive failures');
+        }
+    }
+
+    private startCircuitBreakerMonitoring() {
+        setInterval(() => {
+            const now = Date.now();
+            if (
+                this.circuitBreaker.state === 'OPEN' &&
+                now - this.circuitBreaker.lastFailure > CIRCUIT_BREAKER_CONFIG.resetTimeout
+            ) {
+                this.circuitBreaker.state = 'HALF_OPEN';
+                this.circuitBreaker.failures = 0;
+                this.logger.info('Circuit breaker entering half-open state');
+            }
+        }, CIRCUIT_BREAKER_CONFIG.monitoringInterval);
+    }
+
+    private startPerformanceMonitoring() {
+        setInterval(async () => {
+            for (const instance of this.pool) {
+                try {
+                    const metrics = await instance.page.evaluate(() => ({
+                        memory: (performance as any).memory?.usedJSHeapSize || 0,
+                        timing: performance.timing
+                    }));
+
+                    instance.memoryUsage = metrics.memory;
+
+                    if (instance.memoryUsage > BROWSER_CONFIG.maxMemoryMB * 1024 * 1024) {
+                        this.logger.warn('Memory threshold exceeded, recycling instance');
+                        await this.recycleBrowserInstance(instance);
+                    }
+                } catch (error) {
+                    this.logger.error('Performance monitoring error:', error);
+                }
+            }
+        }, BROWSER_CONFIG.healthCheckInterval);
+    }
+
     async acquirePage(): Promise<Page> {
+        try {
+            // Check circuit breaker
+            if (this.circuitBreaker.state === 'OPEN') {
+                throw new Error('Circuit breaker is open, requests are blocked');
+            }
+
+            // Check queue size
+            if (this.requestQueue.length >= PERFORMANCE_CONFIG.maxQueueSize) {
+                throw new Error('Request queue is full');
+            }
+
+            const page = await new Promise<Page>((resolve, reject) => {
+                const queueEntry = { resolve, reject, timestamp: Date.now() };
+                this.requestQueue.push(queueEntry);
+                this.processQueue();
+
+                // Set queue timeout
+                setTimeout(() => {
+                    const index = this.requestQueue.indexOf(queueEntry);
+                    if (index !== -1) {
+                        this.requestQueue.splice(index, 1);
+                        reject(new Error('Request queue timeout'));
+                    }
+                }, PERFORMANCE_CONFIG.queueTimeoutMs);
+            });
+
+            await this.updateCircuitBreaker(true);
+            return page;
+        } catch (error) {
+            await this.updateCircuitBreaker(false);
+            throw error;
+        }
+    }
+
+    private async processQueue() {
+        if (this.requestQueue.length === 0) return;
+
         try {
             await this.cleanupExpiredInstances();
 
             let instance = this.pool.find(inst => {
                 try {
-                    return !inst.page.isClosed();
+                    return !inst.page.isClosed() && inst.failureCount < 3;
                 } catch {
                     return false;
                 }
@@ -91,7 +273,7 @@ class BrowserPool {
                 instance = await this.createBrowserInstance();
                 this.pool.push(instance);
             } else if (!instance) {
-                const oldestInstance = this.pool.reduce((oldest, current) => 
+                const oldestInstance = this.pool.reduce((oldest, current) =>
                     current.lastUsed < oldest.lastUsed ? current : oldest
                 );
                 await this.recycleBrowserInstance(oldestInstance);
@@ -99,10 +281,16 @@ class BrowserPool {
             }
 
             instance.lastUsed = Date.now();
-            return instance.page;
+            const queueEntry = this.requestQueue.shift();
+            if (queueEntry) {
+                queueEntry.resolve(instance.page);
+            }
         } catch (error) {
-            this.logger.error('Failed to acquire page:', error);
-            throw error;
+            const queueEntry = this.requestQueue.shift();
+            if (queueEntry) {
+                queueEntry.reject(error as Error);
+            }
+            this.logger.error('Failed to process queue:', error instanceof Error ? error.message : String(error));
         }
     }
 
@@ -111,8 +299,20 @@ class BrowserPool {
             const context = instance.context;
             await context.clearCookies();
             await context.clearPermissions();
+            
+            // Close all pages except the main one
+            const pages = context.pages();
+            await Promise.all(
+                pages
+                    .filter(p => p !== instance.page)
+                    .map(p => p.close().catch(() => {}))
+            );
+
             const page = await context.newPage();
             instance.page = page;
+            instance.lastUsed = Date.now();
+            instance.failureCount = 0;
+            instance.memoryUsage = 0;
         } catch (error) {
             this.logger.error('Failed to recycle browser instance:', error);
             const newInstance = await this.createBrowserInstance();
@@ -139,7 +339,11 @@ class BrowserPool {
 
         for (let i = this.pool.length - 1; i >= 0; i--) {
             const instance = this.pool[i];
-            if (now - instance.lastUsed > expirationTime) {
+            if (
+                now - instance.lastUsed > expirationTime ||
+                instance.failureCount >= 3 ||
+                instance.memoryUsage > BROWSER_CONFIG.maxMemoryMB * 1024 * 1024
+            ) {
                 await this.cleanupInstance(instance);
                 this.pool.splice(i, 1);
             }
@@ -151,7 +355,7 @@ class BrowserPool {
             this.cleanupExpiredInstances().catch(error => {
                 this.logger.error('Error during maintenance cleanup:', error);
             });
-        }, 60000); // Run every minute
+        }, BROWSER_CONFIG.gcInterval);
     }
 
     async cleanup(): Promise<void> {
@@ -198,11 +402,10 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             throw new Error('URL exceeds maximum length');
         }
 
-        // Step 2: Set up consent cookies for all potential Google domains
+        // Step 2: Set up consent cookies
         const domain = parsedUrl.hostname;
         const consentCookies = [];
 
-        // Base Google consent cookie
         consentCookies.push({
             name: 'CONSENT',
             value: 'YES+cb.20240107-11-p0.en+FX',
@@ -210,7 +413,6 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             path: '/'
         });
 
-        // Regional consent cookies if needed
         if (CONSENT_REGIONS.some(region => domain.includes(region)) && domain !== 'google.com') {
             const specificDomain = `.${domain}`;
             const generalDomain = `.${domain.split('.').slice(-2).join('.')}`;
@@ -231,17 +433,14 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             );
         }
 
-        // Step 3: Apply all cookies at once
         await page.context().addCookies(consentCookies);
-        await page.waitForTimeout(1000); // Brief wait for cookies to take effect
 
-        // Step 4: Navigation with retries
+        // Step 3: Navigation with exponential backoff retry
         let attempts = 0;
-        let lastError: Error | null = null;
+        let delay = BROWSER_CONFIG.initialRetryDelay;
 
         while (attempts < BROWSER_CONFIG.maxRetries) {
             try {
-                // Initial navigation
                 const response = await page.goto(url, {
                     waitUntil: 'domcontentloaded',
                     timeout: BROWSER_CONFIG.navigationTimeout
@@ -251,38 +450,35 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                     throw new Error('Navigation failed: no response received');
                 }
 
-                // Check HTTP status
-                const status = response.status();
-                if (status >= 400) {
-                    throw new Error(`HTTP ${status}: ${response.statusText()}`);
+                if (response.status() >= 400) {
+                    throw new Error(`HTTP ${response.status()}: ${response.statusText()}`);
                 }
 
-                // Step 5: Enhanced network idle handling
+                // Enhanced network idle handling
                 const networkIdlePromise = page.waitForLoadState('networkidle', {
                     timeout: BROWSER_CONFIG.networkIdleTimeout
                 }).catch(() => 'timeout');
 
-                const timeoutPromise = new Promise(resolve =>
+                const timeoutPromise2 = new Promise(resolve =>
                     setTimeout(() => resolve('timeout'), BROWSER_CONFIG.networkIdleTimeout)
                 );
 
-                const networkResult = await Promise.race([networkIdlePromise, timeoutPromise]);
+                const networkResult = await Promise.race([networkIdlePromise, timeoutPromise2]);
                 
                 if (networkResult === 'timeout') {
                     logger.warn('Network idle timeout reached, proceeding with validation');
                 }
 
-                // Step 6: Comprehensive page validation
+                // Page validation
                 const validation = await validatePage(page);
                 if (!validation.isValid) {
                     throw new Error(validation.error);
                 }
 
-                // Additional security check for redirects
+                // Security check for redirects
                 const finalUrl = page.url();
                 if (finalUrl !== url) {
                     logger.warn(`Page redirected from ${url} to ${finalUrl}`);
-                    // Validate the final URL follows same security rules
                     const finalParsedUrl = new URL(finalUrl);
                     if (!SECURITY_CONFIG.allowedProtocols.includes(finalParsedUrl.protocol)) {
                         throw new Error(`Redirect to unsupported protocol: ${finalParsedUrl.protocol}`);
@@ -291,16 +487,20 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
 
                 return;
             } catch (error) {
-                lastError = error as Error;
                 attempts++;
+                const errorMessage = error instanceof Error ? error.message : String(error);
                 
                 if (attempts >= BROWSER_CONFIG.maxRetries) {
-                    logger.error('All navigation attempts failed:', lastError);
-                    throw new Error(`Navigation failed after ${attempts} attempts: ${lastError.message}`);
+                    logger.error('All navigation attempts failed:', errorMessage);
+                    throw new Error(`Navigation failed after ${attempts} attempts: ${errorMessage}`);
                 }
 
-                logger.warn(`Navigation attempt ${attempts} failed: ${lastError.message}, retrying...`);
-                await page.waitForTimeout(BROWSER_CONFIG.retryDelay * attempts); // Exponential backoff
+                logger.warn(`Navigation attempt ${attempts} failed: ${errorMessage}, retrying...`);
+                
+                // Exponential backoff with jitter
+                const jitter = Math.random() * 1000;
+                delay = Math.min(delay * 2 + jitter, BROWSER_CONFIG.maxRetryDelay);
+                await page.waitForTimeout(delay);
             }
         }
     } catch (error) {
@@ -312,27 +512,25 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
 async function validatePage(page: Page): Promise<ValidationResult> {
     try {
         const validation = await page.evaluate((): PageValidation => {
-            // Enhanced bot protection detection
             const botProtectionSelectors = [
-                '#challenge-running',     // Cloudflare
-                '#cf-challenge-running',  // Cloudflare
-                '#px-captcha',           // PerimeterX
-                '#ddos-protection',      // Various
-                '#waf-challenge-html',   // Various WAFs
-                '.ray-id',               // Cloudflare
-                '#captcha-box',          // Generic
-                '.g-recaptcha',          // Google reCAPTCHA
-                '#h-captcha',            // hCaptcha
-                '.turnstile-wrapper',    // Cloudflare Turnstile
-                '[class*="captcha"]',    // Generic captcha classes
-                '[id*="captcha"]'        // Generic captcha ids
+                '#challenge-running',
+                '#cf-challenge-running',
+                '#px-captcha',
+                '#ddos-protection',
+                '#waf-challenge-html',
+                '.ray-id',
+                '#captcha-box',
+                '.g-recaptcha',
+                '#h-captcha',
+                '.turnstile-wrapper',
+                '[class*="captcha"]',
+                '[id*="captcha"]'
             ];
 
             const botProtectionExists = botProtectionSelectors.some(selector =>
                 document.querySelector(selector)
             );
 
-            // Enhanced suspicious title detection
             const suspiciousTitlePhrases = [
                 'security check',
                 'ddos protection',
@@ -354,11 +552,9 @@ async function validatePage(page: Page): Promise<ValidationResult> {
                 title.includes(phrase)
             );
 
-            // Enhanced content validation
             const bodyText = document.body.innerText || '';
             const words = bodyText.trim().split(/\s+/).length;
 
-            // Check for common error indicators in content
             const errorIndicators = [
                 '404 not found',
                 'page not found',
@@ -372,16 +568,23 @@ async function validatePage(page: Page): Promise<ValidationResult> {
                 bodyText.toLowerCase().includes(indicator)
             );
 
+            // Collect performance metrics
+            const performanceMetrics = {
+                loadTime: performance.now(),
+                resourceCount: performance.getEntriesByType('resource').length,
+                memoryUsage: (performance as any).memory?.usedJSHeapSize || 0
+            };
+
             return {
                 wordCount: words,
                 botProtection: botProtectionExists,
                 suspiciousTitle,
                 title: document.title,
-                hasErrorContent
+                hasErrorContent,
+                performanceMetrics
             };
         });
 
-        // Validate bot protection
         if (validation.botProtection) {
             return {
                 isValid: false,
@@ -389,7 +592,6 @@ async function validatePage(page: Page): Promise<ValidationResult> {
             };
         }
 
-        // Validate title
         if (validation.suspiciousTitle) {
             return {
                 isValid: false,
@@ -397,7 +599,6 @@ async function validatePage(page: Page): Promise<ValidationResult> {
             };
         }
 
-        // Validate content length
         if (validation.wordCount < BROWSER_CONFIG.minContentWords) {
             return {
                 isValid: false,
@@ -405,7 +606,6 @@ async function validatePage(page: Page): Promise<ValidationResult> {
             };
         }
 
-        // Validate error content
         if (validation.hasErrorContent) {
             return {
                 isValid: false,
@@ -413,7 +613,14 @@ async function validatePage(page: Page): Promise<ValidationResult> {
             };
         }
 
-        // Additional security checks
+        // Performance validation
+        if (validation.performanceMetrics.loadTime > PERFORMANCE_CONFIG.criticalRequestThreshold) {
+            return {
+                isValid: false,
+                error: 'Page load time exceeded critical threshold'
+            };
+        }
+
         const url = page.url();
         if (url.includes('data:') || url.includes('javascript:')) {
             return {
@@ -440,45 +647,30 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             return;
         }
 
-        // Increased initial wait for consent dialog
-        await page.waitForTimeout(5000);
+        await page.waitForTimeout(2000);
 
-        // Specific Google consent dialog selectors based on current structure
         const consentSelectors = [
-            // Main dialog container
             'div[role="dialog"][aria-modal="true"]',
-            // Specific Google consent classes
             'div.HTjtHe[role="dialog"]',
             'div.KxvlWc',
             'button[class*="tHlp8d"]',
-            // Dialog with specific text
             'div[aria-label*="Before you continue to Google Search"]',
-            // Consent form
             'form:has(button[class*="tHlp8d"])',
-            // Fallback for general consent elements
             'div[aria-modal="true"]:has(button:has-text("Accept all"))'
         ];
 
-        // Multiple attempts to dismiss consent
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
-                // Check for consent dialog
                 const hasConsent = await page.$(consentSelectors.join(', ')).then(Boolean);
                 if (!hasConsent) {
                     return;
                 }
 
-                // Try specific Google consent button selectors first
                 await Promise.any([
-                    // Target the exact button structure from the consent dialog
                     page.click('button[class*="tHlp8d"]').catch(() => null),
                     page.click('div[role="dialog"] button[class*="tHlp8d"]').catch(() => null),
                     page.click('div[class*="QS5gu"] button').catch(() => null),
-                    
-                    // Click by text content with specific class
                     page.click('button:has-text("Accept all")[class*="tHlp8d"]').catch(() => null),
-                    
-                    // Evaluate in page context with exact class matching
                     page.evaluate(() => {
                         const acceptButton = document.querySelector('button[class*="tHlp8d"]');
                         if (acceptButton) {
@@ -487,25 +679,18 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
                         }
                         return false;
                     }).catch(() => null),
-                    
-                    // Fallback to more general selectors
                     page.click('div[role="dialog"] button:has-text("Accept all")').catch(() => null),
                     page.click('button:has-text("Accept all")').catch(() => null)
                 ]).catch(() => {
-                    logger.warn('Failed to click consent button, retrying with delay...');
-                    return page.waitForTimeout(1000).then(() =>
-                        page.click('button[class*="tHlp8d"]')
-                    );
+                    logger.warn('Failed to click consent button, retrying...');
                 });
-                
-                // Wait for dialog to disappear
+
                 await page.waitForFunction(() => {
                     return !document.querySelector('div[role="dialog"]');
                 }, { timeout: 5000 }).catch(() => {
                     logger.warn('Dialog did not disappear after clicking accept');
                 });
 
-                // Wait to see if the consent dialog disappears
                 await page.waitForTimeout(1000);
                 const consentStillPresent = await page.$(consentSelectors.join(', ')).then(Boolean);
                 if (!consentStillPresent) {
