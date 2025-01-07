@@ -14,10 +14,10 @@ export const SERVER_CONFIG = {
 
 // Browser configuration
 export const BROWSER_CONFIG = {
-    maxRetries: 3,
-    retryDelay: 1000,
-    navigationTimeout: 60000,  // Doubled to handle consent dialogs
-    networkIdleTimeout: 15000, // Increased for slower connections
+    maxRetries: 5,
+    retryDelay: 2000,
+    navigationTimeout: 90000,  // Increased further for consent dialogs
+    networkIdleTimeout: 30000, // Doubled for slower connections
     minContentWords: 10,
     maxPageLoadTime: 60000,
 };
@@ -45,6 +45,7 @@ export const SECURITY_CONFIG = {
 
 // Regions that commonly show consent dialogs
 export const CONSENT_REGIONS = [
+    'google.com',     // Added main Google domain
     'google.co.uk',
     'google.de',
     'google.fr',
