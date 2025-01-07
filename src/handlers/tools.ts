@@ -16,7 +16,6 @@ import { Logger } from "../utils/logger.js";
 
 const logger = new Logger('ToolHandler');
 
-// Error codes from MCP SDK
 const MCP_ERRORS = {
     InvalidRequest: ErrorCode.InvalidRequest,
     InvalidParams: ErrorCode.InvalidParams,
@@ -50,8 +49,133 @@ function createSuccessResponse(text: string): ToolHandlerResponse {
     });
 }
 
+async function performGoogleSearch(page: Page, query: string): Promise<SearchResult[]> {
+    if (page.isClosed()) {
+        throw new McpError(MCP_ERRORS.InternalError, 'Browser page is not available');
+    }
+
+    await safePageNavigation(page, 'https://www.google.com');
+    await dismissGoogleConsent(page);
+
+    const searchInput = await page.waitForSelector(
+        'input[name="q"], textarea[name="q"], input[type="text"]',
+        { timeout: 5000 }
+    );
+
+    if (!searchInput) {
+        throw new McpError(MCP_ERRORS.InternalError, 'Search input not found');
+    }
+
+    await searchInput.fill(query);
+
+    await Promise.all([
+        page.keyboard.press('Enter'),
+        page.waitForNavigation({
+            waitUntil: 'domcontentloaded',
+            timeout: 5000
+        })
+    ]).catch(() => {
+        throw new McpError(MCP_ERRORS.InternalError, 'Search submission failed');
+    });
+
+    const resultsPresent = await page.waitForSelector('div.g', { timeout: 5000 });
+    if (!resultsPresent) {
+        throw new McpError(MCP_ERRORS.InternalError, 'No search results found');
+    }
+
+    const searchResults = await page.$$eval('div.g', (elements) => {
+        return elements.map((el) => {
+            const titleEl = el.querySelector('h3');
+            const linkEl = el.querySelector('a');
+            const snippetEl = el.querySelector('div.VwiC3b');
+
+            if (!titleEl || !linkEl || !snippetEl) {
+                return null;
+            }
+
+            return {
+                title: titleEl.textContent || '',
+                url: linkEl.getAttribute('href') || '',
+                snippet: snippetEl.textContent || '',
+            };
+        }).filter((result): result is SearchResult => result !== null);
+    });
+
+    if (!searchResults || searchResults.length === 0) {
+        throw new McpError(MCP_ERRORS.InternalError, 'No valid search results found');
+    }
+
+    return searchResults;
+}
+
+async function performVisitPage(page: Page, url: string, takeScreenshot: boolean): Promise<PageResult> {
+    if (page.isClosed()) {
+        throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
+    }
+
+    await safePageNavigation(page, url);
+    const title = await page.title();
+    const content = await extractContentAsMarkdown(page);
+
+    if (!content) {
+        throw new McpError(MCP_ERRORS.InternalError, 'Failed to extract content');
+    }
+
+    let sessionId = getCurrentSession()?.id;
+    if (!sessionId) {
+        sessionId = createSession(title);
+    }
+
+    const pageResult: ResearchResult = {
+        url,
+        title,
+        content,
+        timestamp: new Date().toISOString(),
+    };
+
+    let screenshotUri: string | undefined;
+    if (takeScreenshot && !page.isClosed()) {
+        const screenshot = await takeScreenshotWithSizeLimit(page);
+        const screenshotPath = await saveScreenshot(screenshot, title);
+        pageResult.screenshotPath = screenshotPath;
+
+        const resultIndex = getCurrentSession()?.results.length ?? 0;
+        screenshotUri = `research://screenshots/${resultIndex}`;
+    }
+
+    addResult(sessionId, pageResult);
+    return { pageResult, screenshotUri };
+}
+
+async function performScreenshot(page: Page): Promise<string> {
+    if (page.isClosed()) {
+        throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
+    }
+
+    const screenshot = await takeScreenshotWithSizeLimit(page);
+    const pageUrl = await page.url();
+    const pageTitle = await page.title();
+    const screenshotPath = await saveScreenshot(screenshot, pageTitle || 'untitled');
+
+    let sessionId = getCurrentSession()?.id;
+    if (!sessionId) {
+        sessionId = createSession('Screenshot Session');
+    }
+
+    const result: ResearchResult = {
+        url: pageUrl,
+        title: pageTitle || "Untitled Page",
+        content: "Screenshot taken",
+        timestamp: new Date().toISOString(),
+        screenshotPath
+    };
+
+    addResult(sessionId, result);
+    const resultIndex = getCurrentSession()?.results.length ?? 0;
+    return `research://screenshots/${resultIndex}`;
+}
+
 export function registerToolHandlers(server: Server): void {
-    // Register tool listing handler
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
         tools: [
             {
@@ -98,7 +222,6 @@ export function registerToolHandlers(server: Server): void {
         ]
     }));
 
-    // Register tool call handler
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let page: Page | undefined;
 
@@ -107,6 +230,8 @@ export function registerToolHandlers(server: Server): void {
             if (!page) {
                 throw new McpError(MCP_ERRORS.InternalError, 'Failed to initialize browser');
             }
+
+            const currentPage = page;
 
             switch (request.params.name) {
                 case "search_google": {
@@ -122,100 +247,31 @@ export function registerToolHandlers(server: Server): void {
                     const query = args.query;
 
                     try {
-                        const searchOperation = async (): Promise<SearchResult[]> => {
-                            if (!page || page.isClosed()) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Browser page is not available');
-                            }
+                        const timeoutPromise = new Promise<never>((_, reject) =>
+                            setTimeout(() => reject(new McpError(MCP_ERRORS.InternalError, 'Operation timed out')), 15000)
+                        );
 
-                            await safePageNavigation(page, 'https://www.google.com');
-                            await dismissGoogleConsent(page);
+                        const searchPromise = withRetry(
+                            () => performGoogleSearch(currentPage, query),
+                            2,
+                            1000
+                        );
 
-                            // Use a single selector with shorter timeout
-                            const searchInput = await page.waitForSelector(
-                                'input[name="q"], textarea[name="q"], input[type="text"]',
-                                { timeout: 5000 }
-                            );
+                        const results = await Promise.race([searchPromise, timeoutPromise]);
 
-                            if (!searchInput) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Search input not found - page may be blocked');
-                            }
+                        let sessionId = getCurrentSession()?.id;
+                        if (!sessionId) {
+                            sessionId = createSession(query);
+                        }
 
-                            // Clear and type in one operation
-                            await searchInput.fill(query);
-
-                            // Submit search and wait for results with shorter timeout
-                            await Promise.all([
-                                page.keyboard.press('Enter'),
-                                page.waitForNavigation({
-                                    waitUntil: 'domcontentloaded',
-                                    timeout: 5000
-                                })
-                            ]).catch(() => {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Search submission timeout');
+                        results.forEach((result) => {
+                            addResult(sessionId!, {
+                                url: result.url,
+                                title: result.title,
+                                content: result.snippet,
+                                timestamp: new Date().toISOString(),
                             });
-
-                            // Wait for search results with timeout
-                            const resultsPresent = await page.waitForSelector(
-                                'div.g',
-                                { timeout: 5000 }
-                            );
-
-                            if (!resultsPresent) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Search results not found');
-                            }
-
-                            // Extract results immediately after they're available
-                            const searchResults = await page.$$eval('div.g', (elements) => {
-                                return elements.map((el) => {
-                                    const titleEl = el.querySelector('h3');
-                                    const linkEl = el.querySelector('a');
-                                    const snippetEl = el.querySelector('div.VwiC3b');
-
-                                    if (!titleEl || !linkEl || !snippetEl) {
-                                        return null;
-                                    }
-
-                                    return {
-                                        title: titleEl.textContent || '',
-                                        url: linkEl.getAttribute('href') || '',
-                                        snippet: snippetEl.textContent || '',
-                                    };
-                                }).filter((result): result is SearchResult => 
-                                    result !== null && 
-                                    typeof result.title === 'string' &&
-                                    typeof result.url === 'string' &&
-                                    typeof result.snippet === 'string'
-                                );
-                            });
-
-                            if (!searchResults || searchResults.length === 0) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'No valid search results found');
-                            }
-
-                            // Store results in session
-                            let sessionId = getCurrentSession()?.id;
-                            if (!sessionId) {
-                                sessionId = createSession(query);
-                            }
-
-                            searchResults.forEach((result) => {
-                                addResult(sessionId!, {
-                                    url: result.url,
-                                    title: result.title,
-                                    content: result.snippet,
-                                    timestamp: new Date().toISOString(),
-                                });
-                            });
-
-                            return searchResults;
-                        };
-
-                        const results = await Promise.race([
-                            withRetry(searchOperation, 2, 1000), // Reduced retries and delay
-                            new Promise<never>((_, reject) =>
-                                setTimeout(() => reject(new McpError(MCP_ERRORS.InternalError, 'Operation timed out')), 30000)
-                            )
-                        ]);
+                        });
 
                         return createSuccessResponse(JSON.stringify(results, null, 2));
                     } catch (error) {
@@ -240,62 +296,14 @@ export function registerToolHandlers(server: Server): void {
                         ));
                     }
 
-                    const visitArgs: VisitPageArguments = {
-                        url: args.url,
-                        takeScreenshot: typeof args.takeScreenshot === 'boolean' ? args.takeScreenshot : false
-                    };
+                    const takeScreenshot = typeof args.takeScreenshot === 'boolean' ? args.takeScreenshot : false;
 
                     try {
-                        if (!page || page.isClosed()) {
-                            throw new McpError(MCP_ERRORS.InternalError, 'Browser page is not available');
-                        }
-
-                        const currentPage = page;
-                        const visitOperation = async (): Promise<PageResult> => {
-                            if (currentPage.isClosed()) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
-                            }
-
-                            await safePageNavigation(currentPage, visitArgs.url);
-                            const title = await currentPage.title();
-                            const content = await extractContentAsMarkdown(currentPage);
-
-                            if (!content) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Failed to extract content');
-                            }
-
-                            // Ensure we have a session
-                            let sessionId = getCurrentSession()?.id;
-                            if (!sessionId) {
-                                sessionId = createSession(title);
-                            }
-
-                            const pageResult: ResearchResult = {
-                                url: visitArgs.url,
-                                title,
-                                content,
-                                timestamp: new Date().toISOString(),
-                            };
-
-                            let screenshotUri: string | undefined;
-                            if (visitArgs.takeScreenshot && !currentPage.isClosed()) {
-                                const screenshot = await takeScreenshotWithSizeLimit(currentPage);
-                                const screenshotPath = await saveScreenshot(screenshot, title);
-                                pageResult.screenshotPath = screenshotPath;
-
-                                const resultIndex = getCurrentSession()?.results.length ?? 0;
-                                screenshotUri = `research://screenshots/${resultIndex}`;
-
-                                server.notification({
-                                    method: "notifications/resources/list_changed"
-                                });
-                            }
-
-                            addResult(sessionId, pageResult);
-                            return { pageResult, screenshotUri };
-                        };
-
-                        const result = await withRetry(visitOperation, 2, 1000);
+                        const result = await withRetry(
+                            () => performVisitPage(currentPage, args.url as string, takeScreenshot),
+                            2,
+                            1000
+                        );
 
                         return createSuccessResponse(JSON.stringify({
                             url: result.pageResult.url,
@@ -313,46 +321,11 @@ export function registerToolHandlers(server: Server): void {
 
                 case "take_screenshot": {
                     try {
-                        if (!page || page.isClosed()) {
-                            throw new McpError(MCP_ERRORS.InternalError, 'Browser page is not available');
-                        }
-
-                        const currentPage = page;
-                        const screenshotOperation = async (): Promise<string> => {
-                            if (currentPage.isClosed()) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
-                            }
-
-                            const screenshot = await takeScreenshotWithSizeLimit(currentPage);
-                            const pageUrl = await currentPage.url();
-                            const pageTitle = await currentPage.title();
-                            const screenshotPath = await saveScreenshot(screenshot, pageTitle || 'untitled');
-
-                            // Ensure we have a session
-                            let sessionId = getCurrentSession()?.id;
-                            if (!sessionId) {
-                                sessionId = createSession('Screenshot Session');
-                            }
-
-                            const result: ResearchResult = {
-                                url: pageUrl,
-                                title: pageTitle || "Untitled Page",
-                                content: "Screenshot taken",
-                                timestamp: new Date().toISOString(),
-                                screenshotPath
-                            };
-
-                            addResult(sessionId, result);
-
-                            server.notification({
-                                method: "notifications/resources/list_changed"
-                            });
-
-                            const resultIndex = getCurrentSession()?.results.length ?? 0;
-                            return `research://screenshots/${resultIndex}`;
-                        };
-
-                        const result = await withRetry(screenshotOperation, 2, 1000);
+                        const result = await withRetry(
+                            () => performScreenshot(currentPage),
+                            2,
+                            1000
+                        );
 
                         return createSuccessResponse(
                             `Screenshot taken successfully. You can view it via *MCP Resources* (Paperclip icon) @ URI: ${result}`
