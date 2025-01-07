@@ -199,12 +199,27 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
         // Set consent cookie for the appropriate domain
         const domain = parsedUrl.hostname;
         if (CONSENT_REGIONS.some(region => domain.includes(region))) {
-            await page.context().addCookies([{
-                name: 'CONSENT',
-                value: 'YES+',
-                domain: `.${domain.split('.').slice(-2).join('.')}`, // e.g., .google.ie from www.google.ie
-                path: '/'
-            }]);
+            // Set both specific and general domain cookies for better coverage
+            const specificDomain = `.${domain}`;
+            const generalDomain = `.${domain.split('.').slice(-2).join('.')}`;
+            
+            await page.context().addCookies([
+                {
+                    name: 'CONSENT',
+                    value: 'YES+cb.20240107-11-p0.en+FX',
+                    domain: specificDomain,
+                    path: '/'
+                },
+                {
+                    name: 'CONSENT',
+                    value: 'YES+cb.20240107-11-p0.en+FX',
+                    domain: generalDomain,
+                    path: '/'
+                }
+            ]);
+            
+            // Wait briefly for cookies to take effect
+            await page.waitForTimeout(1000);
         }
 
         let attempts = 0;
@@ -312,30 +327,29 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             return;
         }
 
-        // Wait longer for consent dialog
-        await page.waitForTimeout(2000);
+        // Wait for consent dialog with increased timeout
+        await page.waitForTimeout(5000);
 
-        // Enhanced consent dialog detection
+        // Enhanced consent dialog detection with specific Google EU selectors
         const consentSelectors = [
-            'form:has(button[aria-label])',
+            // Primary Google consent selectors
             'div[aria-modal="true"]',
+            'div#CXQnmb',
+            'div.VDity',
+            'div.KxvlWc',
+            'div.g4R1Kc',
+            'div.rQszV',
             'div[role="dialog"]',
-            'div[role="alertdialog"]',
+            // Specific button selectors
+            'button[aria-label*="Accept"]',
+            'button[aria-label*="agree"]',
+            'button[aria-label*="consent"]',
+            // Fallback selectors
+            'form:has(button[aria-label])',
             'div[class*="consent"]',
             'div[id*="consent"]',
             'div[class*="cookie"]',
-            'div[id*="cookie"]',
-            'div[class*="modal"]:has(button)',
-            'div[class*="popup"]:has(button)',
-            'div[class*="banner"]:has(button)',
-            'div[id*="banner"]:has(button)',
-            // Additional EU-specific selectors
-            'div[aria-label*="cookie"]',
-            'div[aria-label*="consent"]',
-            'div#CXQnmb', // Google's consent dialog
-            'div[class*="consent-bump"]',
-            'div.VDity', // Another Google consent class
-            'div.KxvlWc' // Another Google consent class
+            'div[id*="cookie"]'
         ];
 
         // Multiple attempts to dismiss consent
@@ -347,53 +361,35 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
                     return;
                 }
 
-                // Try to click accept button
-                await page.evaluate(() => {
-                    const consentPatterns = {
-                        text: [
-                            'accept all', 'agree', 'consent',
-                            'alle akzeptieren', 'ich stimme zu', 'zustimmen',
-                            'tout accepter', "j'accepte",
-                            'aceptar todo', 'acepto',
-                            'accetta tutto', 'accetto',
-                            'aceitar tudo', 'concordo',
-                            'alles accepteren', 'akkoord',
-                            'zaakceptuj wszystko', 'zgadzam się',
-                            'godkänn alla', 'godkänn',
-                            'accepter alle', 'accepter',
-                            'godta alle', 'godta',
-                            'hyväksy kaikki', 'hyväksy',
-                            'terima semua', 'setuju',
-                            'ยอมรับทั้งหมด', 'ยอมรับ',
-                            'chấp nhận tất cả', 'đồng ý',
-                            'tanggapin lahat', 'sumang-ayon',
-                            'すべて同意する', '同意する',
-                            '모두 동의', '동의'
-                        ],
-                        ariaLabels: [
-                            'consent', 'accept', 'agree',
-                            'cookie', 'privacy', 'terms',
-                            'persetujuan', 'setuju',
-                            'ยอมรับ',
-                            'đồng ý',
-                            '同意'
-                        ]
-                    };
-
-                    const findAcceptButton = () => {
-                        const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button'));
-                        return buttons.find(button => {
-                            const text = button.textContent?.toLowerCase() || '';
-                            const label = button.getAttribute('aria-label')?.toLowerCase() || '';
-                            return consentPatterns.text.some(pattern => text.includes(pattern)) ||
-                                   consentPatterns.ariaLabels.some(pattern => label.includes(pattern));
+                // Try multiple methods to accept consent
+                await Promise.any([
+                    // Method 1: Direct button click
+                    page.click('button:has-text("Accept all")').catch(() => null),
+                    page.click('button:has-text("Agree")').catch(() => null),
+                    page.click('button[aria-label*="Accept"]').catch(() => null),
+                    
+                    // Method 2: Evaluate in page context
+                    page.evaluate(() => {
+                        const buttonTexts = ['accept all', 'agree', 'accept', 'consent'];
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const acceptButton = buttons.find(button => {
+                            const text = (button.textContent || '').toLowerCase();
+                            const label = (button.getAttribute('aria-label') || '').toLowerCase();
+                            return buttonTexts.some(t => text.includes(t) || label.includes(t));
                         });
-                    };
-
-                    const acceptButton = findAcceptButton();
-                    if (acceptButton) {
-                        acceptButton.click();
-                    }
+                        if (acceptButton) acceptButton.click();
+                    }).catch(() => null),
+                    
+                    // Method 3: Frame handling
+                    page.frameLocator('iframe').locator('button:has-text("Accept all")').click()
+                        .catch(() => null),
+                        
+                    // Method 4: Specific Google selectors
+                    page.click('div[role="dialog"] button:has-text("Accept all")').catch(() => null),
+                    page.click('div.VDity button:has-text("Accept all")').catch(() => null),
+                    page.click('div.KxvlWc button:has-text("Accept all")').catch(() => null)
+                ]).catch(() => {
+                    logger.warn('All consent acceptance methods failed');
                 });
 
                 // Wait to see if the consent dialog disappears
