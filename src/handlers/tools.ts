@@ -127,13 +127,17 @@ export function registerToolHandlers(server: Server): void {
                             await dismissGoogleConsent(page!);
 
                             await withRetry(async () => {
+                                // Increased timeout for search input selector
                                 await Promise.race([
-                                    page!.waitForSelector('input[name="q"]', { timeout: 5000 }),
-                                    page!.waitForSelector('textarea[name="q"]', { timeout: 5000 }),
-                                    page!.waitForSelector('input[type="text"]', { timeout: 5000 })
+                                    page!.waitForSelector('input[name="q"]', { timeout: 15000 }),
+                                    page!.waitForSelector('textarea[name="q"]', { timeout: 15000 }),
+                                    page!.waitForSelector('input[type="text"]', { timeout: 15000 })
                                 ]).catch(() => {
-                                    throw new McpError(MCP_ERRORS.InternalError, 'Search input not found');
+                                    throw new McpError(MCP_ERRORS.InternalError, 'Search input not found - the page may still be loading or blocked by consent dialog');
                                 });
+    
+                                // Additional wait for any overlays to clear
+                                await page!.waitForTimeout(2000);
 
                                 const searchInput = await page!.$('input[name="q"]') ||
                                     await page!.$('textarea[name="q"]') ||
