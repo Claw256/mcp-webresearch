@@ -13,7 +13,8 @@
     "dev": "tsc-watch --onSuccess \"node build/index.js\"",
     "clean": "rimraf build",
     "prebuild": "npm run clean",
-    "postbuild": "node -e \"import('fs').then(fs => fs.promises.chmod('build/index.js', 0o755)).catch(() => {});\""
+    "postbuild": "node -e \"import('fs').then(fs => fs.promises.chmod('build/index.js', 0o755)).catch(() => {});\"",
+    "prepare": "npm run build"
   },
   "keywords": [
     "mcp",
