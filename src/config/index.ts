@@ -44,8 +44,9 @@ export const SECURITY_CONFIG = {
 };
 
 // Regions that commonly show consent dialogs
+// Default and regional Google domains that show consent dialogs
 export const CONSENT_REGIONS = [
-    'google.com',     // Added main Google domain
+    'google.com',     // Default Google domain - always include
     'google.co.uk',
     'google.de',
     'google.fr',
