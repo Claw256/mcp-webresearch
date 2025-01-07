@@ -58,9 +58,15 @@ const server: Server = new Server(
             },
             resources: {},  // Resource handling capabilities
             prompts: {}     // Prompt processing capabilities
-        },
+        }
     }
 );
+
+// Error handling for server
+server.onerror = (error) => {
+    console.error("Server error:", error);
+    cleanup().catch(console.error);
+};
 
 // Register all handlers
 registerToolHandlers(server);
@@ -69,23 +75,50 @@ registerPromptHandlers(server);
 
 // Initialize MCP server connection using stdio transport
 const transport = new StdioServerTransport();
-server.connect(transport).catch((error) => {
-    console.error("Failed to start server:", error);
-    process.exit(1);
-});
 
 // Cleanup function
 async function cleanup(): Promise<void> {
     try {
         await cleanupScreenshots();
         await cleanupBrowser();
+        await server.close().catch(() => {});
     } catch (error) {
         console.error('Error during cleanup:', error);
     }
 }
 
-// Register cleanup handlers
-process.on('exit', cleanup);
-process.on('SIGTERM', cleanup);
-process.on('SIGINT', cleanup);
-process.on('SIGHUP', cleanup);
+// Register cleanup handlers with proper async handling
+const handleExit = (signal: string) => {
+    console.error(`Received ${signal}, cleaning up...`);
+    cleanup()
+        .then(() => {
+            console.error('Cleanup completed, exiting...');
+            process.exit(0);
+        })
+        .catch((error) => {
+            console.error('Cleanup failed:', error);
+            process.exit(1);
+        });
+};
+
+// Use proper signal handling
+process.on('SIGTERM', () => handleExit('SIGTERM'));
+process.on('SIGINT', () => handleExit('SIGINT'));
+process.on('SIGHUP', () => handleExit('SIGHUP'));
+
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught exception:', error);
+    handleExit('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection:', reason);
+    handleExit('unhandledRejection');
+});
+
+// Start server with error handling
+server.connect(transport).catch((error) => {
+    console.error("Failed to start server:", error);
+    cleanup().finally(() => process.exit(1));
+});
