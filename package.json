@@ -8,11 +8,12 @@
     "mcp-webresearch": "build/index.js"
   },
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "build": "tsc",
     "start": "node build/index.js",
     "dev": "tsc-watch --onSuccess \"node build/index.js\"",
     "clean": "rimraf build",
-    "prebuild": "npm run clean"
+    "prebuild": "npm run clean",
+    "postbuild": "node -e \"import('fs').then(fs => fs.promises.chmod('build/index.js', 0o755)).catch(() => {});\""
   },
   "keywords": [
     "mcp",
@@ -36,5 +37,11 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "files": [
+    "build/**/*",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ]
 }
