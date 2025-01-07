@@ -14,12 +14,12 @@ export const SERVER_CONFIG = {
 
 // Browser configuration
 export const BROWSER_CONFIG = {
-    maxRetries: 3,
-    retryDelay: 1000,
-    navigationTimeout: 15000,
-    networkIdleTimeout: 5000,
+    maxRetries: 5,
+    retryDelay: 2000,
+    navigationTimeout: 30000,
+    networkIdleTimeout: 10000,
     minContentWords: 10,
-    maxPageLoadTime: 30000,
+    maxPageLoadTime: 60000,
 };
 
 // Session configuration
