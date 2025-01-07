@@ -11,7 +11,7 @@ import { cleanupScreenshots } from "./services/screenshot.js";
 // Initialize MCP server with basic configuration
 const server: Server = new Server(
     {
-        name: "mcp-webresearch",
+        name: "webresearch",
         version: "0.1.7",
     },
     {
