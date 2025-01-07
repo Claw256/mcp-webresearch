@@ -13,7 +13,7 @@ const logger = new Logger('Utils');
 export async function withRetry<T>(
     operation: () => Promise<T>,
     maxRetries: number = BROWSER_CONFIG.maxRetries,
-    delay: number = BROWSER_CONFIG.retryDelay
+    delay: number = BROWSER_CONFIG.initialRetryDelay
 ): Promise<T> {
     let lastError: Error | undefined;
 
