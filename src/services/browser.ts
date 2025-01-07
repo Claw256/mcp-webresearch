@@ -19,6 +19,7 @@ interface PageValidation {
     botProtection: boolean;
     suspiciousTitle: boolean;
     title: string;
+    hasErrorContent: boolean;
 }
 
 class BrowserPool {
@@ -187,6 +188,7 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
     const logger = new Logger('Navigation');
 
     try {
+        // Step 1: URL validation
         const parsedUrl = new URL(url);
         if (!SECURITY_CONFIG.allowedProtocols.includes(parsedUrl.protocol)) {
             throw new Error(`Unsupported protocol: ${parsedUrl.protocol}`);
@@ -196,23 +198,24 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             throw new Error('URL exceeds maximum length');
         }
 
-        // Always set consent cookie for google.com
-        await page.context().addCookies([
-            {
-                name: 'CONSENT',
-                value: 'YES+cb.20240107-11-p0.en+FX',
-                domain: '.google.com',
-                path: '/'
-            }
-        ]);
-
-        // Set additional consent cookies for regional domains
+        // Step 2: Set up consent cookies for all potential Google domains
         const domain = parsedUrl.hostname;
+        const consentCookies = [];
+
+        // Base Google consent cookie
+        consentCookies.push({
+            name: 'CONSENT',
+            value: 'YES+cb.20240107-11-p0.en+FX',
+            domain: '.google.com',
+            path: '/'
+        });
+
+        // Regional consent cookies if needed
         if (CONSENT_REGIONS.some(region => domain.includes(region)) && domain !== 'google.com') {
             const specificDomain = `.${domain}`;
             const generalDomain = `.${domain.split('.').slice(-2).join('.')}`;
             
-            await page.context().addCookies([
+            consentCookies.push(
                 {
                     name: 'CONSENT',
                     value: 'YES+cb.20240107-11-p0.en+FX',
@@ -225,53 +228,79 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                     domain: generalDomain,
                     path: '/'
                 }
-            ]);
+            );
         }
 
-        // Wait briefly for cookies to take effect
-        await page.waitForTimeout(1000);
+        // Step 3: Apply all cookies at once
+        await page.context().addCookies(consentCookies);
+        await page.waitForTimeout(1000); // Brief wait for cookies to take effect
 
+        // Step 4: Navigation with retries
         let attempts = 0;
+        let lastError: Error | null = null;
+
         while (attempts < BROWSER_CONFIG.maxRetries) {
             try {
+                // Initial navigation
                 const response = await page.goto(url, {
                     waitUntil: 'domcontentloaded',
                     timeout: BROWSER_CONFIG.navigationTimeout
                 });
 
                 if (!response) {
-                    throw new Error('No response received');
+                    throw new Error('Navigation failed: no response received');
                 }
 
+                // Check HTTP status
                 const status = response.status();
                 if (status >= 400) {
                     throw new Error(`HTTP ${status}: ${response.statusText()}`);
                 }
 
-                await Promise.race([
-                    page.waitForLoadState('networkidle', { 
-                        timeout: BROWSER_CONFIG.networkIdleTimeout 
-                    }).catch(() => {}),
-                    new Promise(resolve => 
-                        setTimeout(resolve, BROWSER_CONFIG.networkIdleTimeout)
-                    )
-                ]);
+                // Step 5: Enhanced network idle handling
+                const networkIdlePromise = page.waitForLoadState('networkidle', {
+                    timeout: BROWSER_CONFIG.networkIdleTimeout
+                }).catch(() => 'timeout');
 
+                const timeoutPromise = new Promise(resolve =>
+                    setTimeout(() => resolve('timeout'), BROWSER_CONFIG.networkIdleTimeout)
+                );
+
+                const networkResult = await Promise.race([networkIdlePromise, timeoutPromise]);
+                
+                if (networkResult === 'timeout') {
+                    logger.warn('Network idle timeout reached, proceeding with validation');
+                }
+
+                // Step 6: Comprehensive page validation
                 const validation = await validatePage(page);
                 if (!validation.isValid) {
                     throw new Error(validation.error);
                 }
 
+                // Additional security check for redirects
+                const finalUrl = page.url();
+                if (finalUrl !== url) {
+                    logger.warn(`Page redirected from ${url} to ${finalUrl}`);
+                    // Validate the final URL follows same security rules
+                    const finalParsedUrl = new URL(finalUrl);
+                    if (!SECURITY_CONFIG.allowedProtocols.includes(finalParsedUrl.protocol)) {
+                        throw new Error(`Redirect to unsupported protocol: ${finalParsedUrl.protocol}`);
+                    }
+                }
+
                 return;
             } catch (error) {
+                lastError = error as Error;
                 attempts++;
+                
                 if (attempts >= BROWSER_CONFIG.maxRetries) {
-                    throw error;
+                    logger.error('All navigation attempts failed:', lastError);
+                    throw new Error(`Navigation failed after ${attempts} attempts: ${lastError.message}`);
                 }
-                logger.warn(`Navigation attempt ${attempts} failed, retrying...`);
-                await new Promise(resolve => 
-                    setTimeout(resolve, BROWSER_CONFIG.retryDelay)
-                );
+
+                logger.warn(`Navigation attempt ${attempts} failed: ${lastError.message}, retrying...`);
+                await page.waitForTimeout(BROWSER_CONFIG.retryDelay * attempts); // Exponential backoff
             }
         }
     } catch (error) {
@@ -281,50 +310,125 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
 }
 
 async function validatePage(page: Page): Promise<ValidationResult> {
-    const validation = await page.evaluate((): PageValidation => {
-        const botProtectionExists = [
-            '#challenge-running',
-            '#cf-challenge-running',
-            '#px-captcha',
-            '#ddos-protection',
-            '#waf-challenge-html'
-        ].some(selector => document.querySelector(selector));
+    try {
+        const validation = await page.evaluate((): PageValidation => {
+            // Enhanced bot protection detection
+            const botProtectionSelectors = [
+                '#challenge-running',     // Cloudflare
+                '#cf-challenge-running',  // Cloudflare
+                '#px-captcha',           // PerimeterX
+                '#ddos-protection',      // Various
+                '#waf-challenge-html',   // Various WAFs
+                '.ray-id',               // Cloudflare
+                '#captcha-box',          // Generic
+                '.g-recaptcha',          // Google reCAPTCHA
+                '#h-captcha',            // hCaptcha
+                '.turnstile-wrapper',    // Cloudflare Turnstile
+                '[class*="captcha"]',    // Generic captcha classes
+                '[id*="captcha"]'        // Generic captcha ids
+            ];
 
-        const suspiciousTitle = [
-            'security check',
-            'ddos protection',
-            'please wait',
-            'just a moment',
-            'attention required'
-        ].some(phrase => document.title.toLowerCase().includes(phrase));
+            const botProtectionExists = botProtectionSelectors.some(selector =>
+                document.querySelector(selector)
+            );
 
-        const bodyText = document.body.innerText || '';
-        const words = bodyText.trim().split(/\s+/).length;
+            // Enhanced suspicious title detection
+            const suspiciousTitlePhrases = [
+                'security check',
+                'ddos protection',
+                'please wait',
+                'just a moment',
+                'attention required',
+                'access denied',
+                'verify human',
+                'bot protection',
+                'captcha required',
+                'verification required',
+                'checking your browser',
+                'javascript required',
+                'cookies required'
+            ];
 
+            const title = document.title.toLowerCase();
+            const suspiciousTitle = suspiciousTitlePhrases.some(phrase =>
+                title.includes(phrase)
+            );
+
+            // Enhanced content validation
+            const bodyText = document.body.innerText || '';
+            const words = bodyText.trim().split(/\s+/).length;
+
+            // Check for common error indicators in content
+            const errorIndicators = [
+                '404 not found',
+                'page not found',
+                'access denied',
+                'forbidden',
+                'error occurred',
+                'service unavailable'
+            ];
+
+            const hasErrorContent = errorIndicators.some(indicator =>
+                bodyText.toLowerCase().includes(indicator)
+            );
+
+            return {
+                wordCount: words,
+                botProtection: botProtectionExists,
+                suspiciousTitle,
+                title: document.title,
+                hasErrorContent
+            };
+        });
+
+        // Validate bot protection
+        if (validation.botProtection) {
+            return {
+                isValid: false,
+                error: 'Bot protection or CAPTCHA detected'
+            };
+        }
+
+        // Validate title
+        if (validation.suspiciousTitle) {
+            return {
+                isValid: false,
+                error: `Suspicious page title detected: "${validation.title}"`
+            };
+        }
+
+        // Validate content length
+        if (validation.wordCount < BROWSER_CONFIG.minContentWords) {
+            return {
+                isValid: false,
+                error: `Page contains insufficient content (${validation.wordCount} words)`
+            };
+        }
+
+        // Validate error content
+        if (validation.hasErrorContent) {
+            return {
+                isValid: false,
+                error: 'Page contains error messages or unavailable content'
+            };
+        }
+
+        // Additional security checks
+        const url = page.url();
+        if (url.includes('data:') || url.includes('javascript:')) {
+            return {
+                isValid: false,
+                error: 'Potentially malicious URL scheme detected'
+            };
+        }
+
+        return { isValid: true };
+    } catch (error) {
         return {
-            wordCount: words,
-            botProtection: botProtectionExists,
-            suspiciousTitle,
-            title: document.title
-        };
-    });
-
-    if (validation.botProtection) {
-        return { isValid: false, error: 'Bot protection detected' };
-    }
-
-    if (validation.suspiciousTitle) {
-        return { 
-            isValid: false, 
-            error: `Suspicious page title detected: "${validation.title}"` 
+            isValid: false,
+            error: `Page validation failed: ${(error as Error).message}`
         };
     }
-
-    if (validation.wordCount < BROWSER_CONFIG.minContentWords) {
-        return { isValid: false, error: 'Page contains insufficient content' };
-    }
-
-    return { isValid: true };
 }
 
 export async function dismissGoogleConsent(page: Page): Promise<void> {
