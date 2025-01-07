@@ -196,12 +196,16 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             throw new Error('URL exceeds maximum length');
         }
 
-        await page.context().addCookies([{
-            name: 'CONSENT',
-            value: 'YES+',
-            domain: '.google.com',
-            path: '/'
-        }]);
+        // Set consent cookie for the appropriate domain
+        const domain = parsedUrl.hostname;
+        if (CONSENT_REGIONS.some(region => domain.includes(region))) {
+            await page.context().addCookies([{
+                name: 'CONSENT',
+                value: 'YES+',
+                domain: `.${domain.split('.').slice(-2).join('.')}`, // e.g., .google.ie from www.google.ie
+                path: '/'
+            }]);
+        }
 
         let attempts = 0;
         while (attempts < BROWSER_CONFIG.maxRetries) {
@@ -308,66 +312,108 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             return;
         }
 
-        const hasConsent = await page.$(
-            'form:has(button[aria-label]), div[aria-modal="true"], ' +
-            'div[role="dialog"], div[role="alertdialog"], ' +
-            'div[class*="consent"], div[id*="consent"], ' +
-            'div[class*="cookie"], div[id*="cookie"], ' +
-            'div[class*="modal"]:has(button), div[class*="popup"]:has(button), ' +
-            'div[class*="banner"]:has(button), div[id*="banner"]:has(button)'
-        ).then(Boolean);
+        // Wait longer for consent dialog
+        await page.waitForTimeout(2000);
 
-        if (!hasConsent) {
-            return;
-        }
+        // Enhanced consent dialog detection
+        const consentSelectors = [
+            'form:has(button[aria-label])',
+            'div[aria-modal="true"]',
+            'div[role="dialog"]',
+            'div[role="alertdialog"]',
+            'div[class*="consent"]',
+            'div[id*="consent"]',
+            'div[class*="cookie"]',
+            'div[id*="cookie"]',
+            'div[class*="modal"]:has(button)',
+            'div[class*="popup"]:has(button)',
+            'div[class*="banner"]:has(button)',
+            'div[id*="banner"]:has(button)',
+            // Additional EU-specific selectors
+            'div[aria-label*="cookie"]',
+            'div[aria-label*="consent"]',
+            'div#CXQnmb', // Google's consent dialog
+            'div[class*="consent-bump"]',
+            'div.VDity', // Another Google consent class
+            'div.KxvlWc' // Another Google consent class
+        ];
 
-        await page.evaluate(() => {
-            const consentPatterns = {
-                text: [
-                    'accept all', 'agree', 'consent',
-                    'alle akzeptieren', 'ich stimme zu', 'zustimmen',
-                    'tout accepter', "j'accepte",
-                    'aceptar todo', 'acepto',
-                    'accetta tutto', 'accetto',
-                    'aceitar tudo', 'concordo',
-                    'alles accepteren', 'akkoord',
-                    'zaakceptuj wszystko', 'zgadzam się',
-                    'godkänn alla', 'godkänn',
-                    'accepter alle', 'accepter',
-                    'godta alle', 'godta',
-                    'hyväksy kaikki', 'hyväksy',
-                    'terima semua', 'setuju',
-                    'ยอมรับทั้งหมด', 'ยอมรับ',
-                    'chấp nhận tất cả', 'đồng ý',
-                    'tanggapin lahat', 'sumang-ayon',
-                    'すべて同意する', '同意する',
-                    '모두 동의', '동의'
-                ],
-                ariaLabels: [
-                    'consent', 'accept', 'agree',
-                    'cookie', 'privacy', 'terms',
-                    'persetujuan', 'setuju',
-                    'ยอมรับ',
-                    'đồng ý',
-                    '同意'
-                ]
-            };
+        // Multiple attempts to dismiss consent
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                // Check for consent dialog
+                const hasConsent = await page.$(consentSelectors.join(', ')).then(Boolean);
+                if (!hasConsent) {
+                    return;
+                }
 
-            const findAcceptButton = () => {
-                const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button'));
-                return buttons.find(button => {
-                    const text = button.textContent?.toLowerCase() || '';
-                    const label = button.getAttribute('aria-label')?.toLowerCase() || '';
-                    return consentPatterns.text.some(pattern => text.includes(pattern)) ||
-                           consentPatterns.ariaLabels.some(pattern => label.includes(pattern));
+                // Try to click accept button
+                await page.evaluate(() => {
+                    const consentPatterns = {
+                        text: [
+                            'accept all', 'agree', 'consent',
+                            'alle akzeptieren', 'ich stimme zu', 'zustimmen',
+                            'tout accepter', "j'accepte",
+                            'aceptar todo', 'acepto',
+                            'accetta tutto', 'accetto',
+                            'aceitar tudo', 'concordo',
+                            'alles accepteren', 'akkoord',
+                            'zaakceptuj wszystko', 'zgadzam się',
+                            'godkänn alla', 'godkänn',
+                            'accepter alle', 'accepter',
+                            'godta alle', 'godta',
+                            'hyväksy kaikki', 'hyväksy',
+                            'terima semua', 'setuju',
+                            'ยอมรับทั้งหมด', 'ยอมรับ',
+                            'chấp nhận tất cả', 'đồng ý',
+                            'tanggapin lahat', 'sumang-ayon',
+                            'すべて同意する', '同意する',
+                            '모두 동의', '동의'
+                        ],
+                        ariaLabels: [
+                            'consent', 'accept', 'agree',
+                            'cookie', 'privacy', 'terms',
+                            'persetujuan', 'setuju',
+                            'ยอมรับ',
+                            'đồng ý',
+                            '同意'
+                        ]
+                    };
+
+                    const findAcceptButton = () => {
+                        const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button'));
+                        return buttons.find(button => {
+                            const text = button.textContent?.toLowerCase() || '';
+                            const label = button.getAttribute('aria-label')?.toLowerCase() || '';
+                            return consentPatterns.text.some(pattern => text.includes(pattern)) ||
+                                   consentPatterns.ariaLabels.some(pattern => label.includes(pattern));
+                        });
+                    };
+
+                    const acceptButton = findAcceptButton();
+                    if (acceptButton) {
+                        acceptButton.click();
+                    }
                 });
-            };
 
-            const acceptButton = findAcceptButton();
-            if (acceptButton) {
-                acceptButton.click();
+                // Wait to see if the consent dialog disappears
+                await page.waitForTimeout(1000);
+                const consentStillPresent = await page.$(consentSelectors.join(', ')).then(Boolean);
+                if (!consentStillPresent) {
+                    break;
+                }
+
+                if (attempt < 2) {
+                    logger.warn(`Consent still present after attempt ${attempt + 1}, retrying...`);
+                    await page.waitForTimeout(1000);
+                }
+            } catch (error) {
+                logger.warn(`Consent dismissal attempt ${attempt + 1} failed:`, error);
+                if (attempt < 2) {
+                    await page.waitForTimeout(1000);
+                }
             }
-        });
+        }
     } catch (error) {
         logger.error('Consent handling failed:', error);
     }
