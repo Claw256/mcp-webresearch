@@ -500,7 +500,11 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                 // Exponential backoff with jitter
                 const jitter = Math.random() * 1000;
                 delay = Math.min(delay * 2 + jitter, BROWSER_CONFIG.maxRetryDelay);
-                await page.waitForTimeout(delay);
+                if (!page.isClosed()) {
+                    await page.waitForTimeout(delay);
+                } else {
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
             }
         }
     } catch (error) {
@@ -647,6 +651,9 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             return;
         }
 
+        if (page.isClosed()) {
+            return;
+        }
         await page.waitForTimeout(2000);
 
         const consentSelectors = [
@@ -691,7 +698,15 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
                     logger.warn('Dialog did not disappear after clicking accept');
                 });
 
-                await page.waitForTimeout(1000);
+                if (!page.isClosed()) {
+                    if (!page.isClosed()) {
+                        await page.waitForTimeout(1000);
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
                 const consentStillPresent = await page.$(consentSelectors.join(', ')).then(Boolean);
                 if (!consentStillPresent) {
                     break;
