@@ -5,6 +5,7 @@
   "type": "module",
   "main": "build/index.js",
   "bin": {
+    "webresearch": "build/index.js",
     "mcp-webresearch": "build/index.js"
   },
   "scripts": {
