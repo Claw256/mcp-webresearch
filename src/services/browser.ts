@@ -330,26 +330,20 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
         // Wait for consent dialog with increased timeout
         await page.waitForTimeout(5000);
 
-        // Enhanced consent dialog detection with specific Google EU selectors
+        // Specific Google consent dialog selectors based on current structure
         const consentSelectors = [
-            // Primary Google consent selectors
-            'div[aria-modal="true"]',
-            'div#CXQnmb',
-            'div.VDity',
+            // Main dialog container
+            'div[role="dialog"][aria-modal="true"]',
+            // Specific Google consent classes
+            'div.HTjtHe[role="dialog"]',
             'div.KxvlWc',
-            'div.g4R1Kc',
-            'div.rQszV',
-            'div[role="dialog"]',
-            // Specific button selectors
-            'button[aria-label*="Accept"]',
-            'button[aria-label*="agree"]',
-            'button[aria-label*="consent"]',
-            // Fallback selectors
-            'form:has(button[aria-label])',
-            'div[class*="consent"]',
-            'div[id*="consent"]',
-            'div[class*="cookie"]',
-            'div[id*="cookie"]'
+            'button[class*="tHlp8d"]',
+            // Dialog with specific text
+            'div[aria-label*="Before you continue to Google Search"]',
+            // Consent form
+            'form:has(button[class*="tHlp8d"])',
+            // Fallback for general consent elements
+            'div[aria-modal="true"]:has(button:has-text("Accept all"))'
         ];
 
         // Multiple attempts to dismiss consent
@@ -361,35 +355,41 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
                     return;
                 }
 
-                // Try multiple methods to accept consent
+                // Try specific Google consent button selectors first
                 await Promise.any([
-                    // Method 1: Direct button click
-                    page.click('button:has-text("Accept all")').catch(() => null),
-                    page.click('button:has-text("Agree")').catch(() => null),
-                    page.click('button[aria-label*="Accept"]').catch(() => null),
+                    // Target the exact button structure from the consent dialog
+                    page.click('button[class*="tHlp8d"]').catch(() => null),
+                    page.click('div[role="dialog"] button[class*="tHlp8d"]').catch(() => null),
+                    page.click('div[class*="QS5gu"] button').catch(() => null),
                     
-                    // Method 2: Evaluate in page context
+                    // Click by text content with specific class
+                    page.click('button:has-text("Accept all")[class*="tHlp8d"]').catch(() => null),
+                    
+                    // Evaluate in page context with exact class matching
                     page.evaluate(() => {
-                        const buttonTexts = ['accept all', 'agree', 'accept', 'consent'];
-                        const buttons = Array.from(document.querySelectorAll('button'));
-                        const acceptButton = buttons.find(button => {
-                            const text = (button.textContent || '').toLowerCase();
-                            const label = (button.getAttribute('aria-label') || '').toLowerCase();
-                            return buttonTexts.some(t => text.includes(t) || label.includes(t));
-                        });
-                        if (acceptButton) acceptButton.click();
+                        const acceptButton = document.querySelector('button[class*="tHlp8d"]');
+                        if (acceptButton) {
+                            (acceptButton as HTMLElement).click();
+                            return true;
+                        }
+                        return false;
                     }).catch(() => null),
                     
-                    // Method 3: Frame handling
-                    page.frameLocator('iframe').locator('button:has-text("Accept all")').click()
-                        .catch(() => null),
-                        
-                    // Method 4: Specific Google selectors
+                    // Fallback to more general selectors
                     page.click('div[role="dialog"] button:has-text("Accept all")').catch(() => null),
-                    page.click('div.VDity button:has-text("Accept all")').catch(() => null),
-                    page.click('div.KxvlWc button:has-text("Accept all")').catch(() => null)
+                    page.click('button:has-text("Accept all")').catch(() => null)
                 ]).catch(() => {
-                    logger.warn('All consent acceptance methods failed');
+                    logger.warn('Failed to click consent button, retrying with delay...');
+                    return page.waitForTimeout(1000).then(() =>
+                        page.click('button[class*="tHlp8d"]')
+                    );
+                });
+                
+                // Wait for dialog to disappear
+                await page.waitForFunction(() => {
+                    return !document.querySelector('div[role="dialog"]');
+                }, { timeout: 5000 }).catch(() => {
+                    logger.warn('Dialog did not disappear after clicking accept');
                 });
 
                 // Wait to see if the consent dialog disappears
