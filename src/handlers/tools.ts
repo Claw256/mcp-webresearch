@@ -23,11 +23,6 @@ const MCP_ERRORS = {
     InternalError: ErrorCode.InternalError
 } as const;
 
-interface VisitPageArguments {
-    url: string;
-    takeScreenshot?: boolean;
-}
-
 function createErrorResponse(error: unknown): ToolHandlerResponse {
     const message = error instanceof Error ? error.message : String(error);
     logger.error('Operation failed:', error);
