@@ -16,7 +16,46 @@ const server: Server = new Server(
     },
     {
         capabilities: {
-            tools: {},      // Available tool configurations
+            tools: {
+                search_google: {
+                    description: "Search Google and return results",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            query: {
+                                type: "string",
+                                description: "Search query"
+                            }
+                        },
+                        required: ["query"]
+                    }
+                },
+                visit_page: {
+                    description: "Visit a webpage and extract its content",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            url: {
+                                type: "string",
+                                description: "URL to visit"
+                            },
+                            takeScreenshot: {
+                                type: "boolean",
+                                description: "Whether to take a screenshot of the page"
+                            }
+                        },
+                        required: ["url"]
+                    }
+                },
+                take_screenshot: {
+                    description: "Take a screenshot of the current page",
+                    inputSchema: {
+                        type: "object",
+                        properties: {},
+                        required: []
+                    }
+                }
+            },
             resources: {},  // Resource handling capabilities
             prompts: {}     // Prompt processing capabilities
         },

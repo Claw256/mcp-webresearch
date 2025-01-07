@@ -1,17 +1,35 @@
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
-export declare const MAX_RESULTS_PER_SESSION = 100;
-export declare const MAX_RETRIES = 3;
-export declare const RETRY_DELAY = 1000;
-export declare const TOOLS: Tool[];
-export declare const PROMPTS: {
-    readonly "agentic-research": {
-        readonly name: "agentic-research";
-        readonly description: "Conduct iterative web research on a topic, exploring it thoroughly through multiple steps while maintaining a dialogue with the user";
-        readonly arguments: readonly [{
-            readonly name: "topic";
-            readonly description: "The topic or question to research";
-            readonly required: true;
-        }];
+export declare const SERVER_CONFIG: {
+    maxConcurrentBrowsers: number;
+    maxSessionsPerUser: number;
+    maxRequestsPerMinute: number;
+    screenshotDir: string;
+    screenshotRetentionHours: number;
+    maxScreenshotSizeBytes: number;
+    maxTotalScreenshotStorageBytes: number;
+};
+export declare const BROWSER_CONFIG: {
+    maxRetries: number;
+    retryDelay: number;
+    navigationTimeout: number;
+    networkIdleTimeout: number;
+    minContentWords: number;
+    maxPageLoadTime: number;
+};
+export declare const SESSION_CONFIG: {
+    maxResultsPerSession: number;
+    maxSessionAgeHours: number;
+    maxContentSizeBytes: number;
+};
+export declare const SECURITY_CONFIG: {
+    allowedProtocols: string[];
+    allowedDomains: string[];
+    maxUrlLength: number;
+    rateLimitWindowMs: number;
+    sanitizeOptions: {
+        allowedTags: string[];
+        allowedAttributes: {
+            a: string[];
+        };
     };
 };
 export declare const CONSENT_REGIONS: string[];

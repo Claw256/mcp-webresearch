@@ -29,7 +29,7 @@ const rules: Record<string, Rule> = {
     },
     preserveImages: {
         filter: 'img' as Filter,
-        replacement: (content: string, node: Node) => {
+        replacement: (_content: string, node: Node) => {
             const element = node as HTMLElement;
             const alt = element.getAttribute('alt') || '';
             const src = element.getAttribute('src');

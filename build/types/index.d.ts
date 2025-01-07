@@ -7,6 +7,7 @@ export interface ResearchResult {
     screenshotPath?: string;
 }
 export interface ResearchSession {
+    id?: string;
     query: string;
     results: ResearchResult[];
     lastUpdated: string;

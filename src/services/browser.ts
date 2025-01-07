@@ -1,4 +1,4 @@
-import { chromium, Browser, Page, BrowserContext, Response } from 'playwright';
+import { chromium, Browser, Page, BrowserContext } from 'playwright';
 import { BROWSER_CONFIG, CONSENT_REGIONS, SECURITY_CONFIG, SERVER_CONFIG } from '../config/index.js';
 import { Logger } from '../utils/logger.js';
 

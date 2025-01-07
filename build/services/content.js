@@ -1,108 +1,198 @@
-import TurndownService from "turndown";
-// Initialize Turndown service for converting HTML to Markdown
+import TurndownService from 'turndown';
+import { Logger } from '../utils/logger.js';
+const logger = new Logger('ContentService');
 const turndownService = new TurndownService({
-    headingStyle: 'atx', // Use # style headings
-    hr: '---', // Horizontal rule style
-    bulletListMarker: '-', // List item marker
-    codeBlockStyle: 'fenced', // Use ``` for code blocks
-    emDelimiter: '_', // Italics style
-    strongDelimiter: '**', // Bold style
-    linkStyle: 'inlined', // Use inline links
+    headingStyle: 'atx',
+    hr: '---',
+    bulletListMarker: '-',
+    codeBlockStyle: 'fenced',
+    emDelimiter: '_'
 });
-// Custom Turndown rules for better content extraction
-turndownService.addRule('removeScripts', {
-    filter: ['script', 'style', 'noscript'],
-    replacement: () => ''
-});
-turndownService.addRule('preserveLinks', {
-    filter: 'a',
-    replacement: (content, node) => {
-        const element = node;
-        const href = element.getAttribute('href');
-        return href ? `[${content}](${href})` : content;
-    }
-});
-turndownService.addRule('preserveImages', {
-    filter: 'img',
-    replacement: (_content, node) => {
-        const element = node;
-        const alt = element.getAttribute('alt') || '';
-        const src = element.getAttribute('src');
-        return src ? `![${alt}](${src})` : '';
-    }
-});
-// Convert HTML content to clean, readable markdown format
-export async function extractContentAsMarkdown(page, selector) {
-    // Execute content extraction in browser context
-    const html = await page.evaluate((sel) => {
-        if (sel) {
-            const element = document.querySelector(sel);
-            return element ? element.outerHTML : '';
+// Configure Turndown rules
+const rules = {
+    removeScripts: {
+        filter: ['script', 'style', 'noscript'],
+        replacement: () => ''
+    },
+    preserveLinks: {
+        filter: 'a',
+        replacement: (content, node) => {
+            const element = node;
+            const href = element.getAttribute('href');
+            return href ? `[${content}](${href})` : content;
         }
-        // Try standard content containers first
-        const contentSelectors = [
-            'main', // HTML5 semantic main content
-            'article', // HTML5 semantic article content
-            '[role="main"]', // ARIA main content role
-            '#content', // Common content ID
-            '.content', // Common content class
-            '.main', // Alternative main class
-            '.post', // Blog post content
-            '.article', // Article content container
-        ];
-        // Try each selector in priority order
-        for (const contentSelector of contentSelectors) {
-            const element = document.querySelector(contentSelector);
-            if (element) {
-                return element.outerHTML;
-            }
+    },
+    preserveImages: {
+        filter: 'img',
+        replacement: (_content, node) => {
+            const element = node;
+            const alt = element.getAttribute('alt') || '';
+            const src = element.getAttribute('src');
+            return src ? `![${alt}](${src})` : '';
         }
-        // Fallback to cleaning full body content
-        const body = document.body;
-        // Define elements to remove for cleaner content
-        const elementsToRemove = [
-            // Navigation elements
-            'header', // Page header
-            'footer', // Page footer
-            'nav', // Navigation sections
-            '[role="navigation"]', // ARIA navigation elements
-            // Sidebars and complementary content
-            'aside', // Sidebar content
-            '.sidebar', // Sidebar by class
-            '[role="complementary"]', // ARIA complementary content
-            // Navigation-related elements
-            '.nav', // Navigation classes
-            '.menu', // Menu elements
-            // Page structure elements
-            '.header', // Header classes
-            '.footer', // Footer classes
-            // Advertising and notices
-            '.advertisement', // Advertisement containers
-            '.ads', // Ad containers
-            '.cookie-notice', // Cookie consent notices
-        ];
-        // Remove each unwanted element from content
-        elementsToRemove.forEach(sel => {
-            body.querySelectorAll(sel).forEach(el => el.remove());
-        });
-        return body.outerHTML;
-    }, selector);
-    if (!html) {
-        return '';
     }
+};
+// Add rules to turndown service
+Object.entries(rules).forEach(([name, rule]) => {
+    turndownService.addRule(name, rule);
+});
+export async function extractContentAsMarkdown(page, options = {}) {
+    const { includeMetadata = true, maxContentLength = 100000, excludeSelectors = [
+        'header',
+        'footer',
+        'nav',
+        '.advertisement',
+        '.ads',
+        '#cookie-banner',
+        '.cookie-notice',
+        '.social-share',
+        '.comments'
+    ] } = options;
     try {
+        // Remove unwanted elements
+        await page.evaluate((selectors) => {
+            selectors.forEach((selector) => {
+                document.querySelectorAll(selector).forEach(element => {
+                    element.remove();
+                });
+            });
+        }, excludeSelectors);
+        // Extract content
+        const content = await page.evaluate((includeMetadata) => {
+            // Helper function to get meta content
+            const getMeta = (name) => {
+                const element = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+                return element ? element.getAttribute('content') : null;
+            };
+            // Build metadata section if requested
+            let metadata = '';
+            if (includeMetadata) {
+                const title = document.title;
+                const description = getMeta('description') || getMeta('og:description');
+                const keywords = getMeta('keywords');
+                const author = getMeta('author') || getMeta('og:site_name');
+                const publishedTime = getMeta('article:published_time') || getMeta('date');
+                metadata = [
+                    `# ${title}`,
+                    '',
+                    description ? `> ${description}` : '',
+                    '',
+                    keywords ? `**Keywords**: ${keywords}` : '',
+                    author ? `**Author**: ${author}` : '',
+                    publishedTime ? `**Published**: ${publishedTime}` : '',
+                    '---',
+                    ''
+                ].filter(Boolean).join('\n');
+            }
+            // Get main content
+            const article = document.querySelector('article') ||
+                document.querySelector('main') ||
+                document.querySelector('.main-content') ||
+                document.querySelector('.content') ||
+                document.body;
+            return {
+                metadata,
+                content: article.innerHTML
+            };
+        }, includeMetadata);
         // Convert HTML to Markdown
-        const markdown = turndownService.turndown(html);
-        // Clean up and format markdown
-        return markdown
-            .replace(/\n{3,}/g, '\n\n') // Replace excessive newlines with double
-            .replace(/^- $/gm, '') // Remove empty list items
-            .replace(/^\s+$/gm, '') // Remove whitespace-only lines
-            .trim(); // Remove leading/trailing whitespace
+        const markdown = turndownService.turndown(content.content);
+        const fullContent = content.metadata + markdown;
+        // Truncate if necessary
+        if (fullContent.length > maxContentLength) {
+            logger.warn(`Content exceeded maximum length, truncating to ${maxContentLength} characters`);
+            return fullContent.slice(0, maxContentLength) + '\n\n[Content truncated...]';
+        }
+        return fullContent;
     }
     catch (error) {
-        console.error('Error converting HTML to Markdown:', error);
-        return html;
+        logger.error('Failed to extract content:', error);
+        throw new Error(`Content extraction failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+export async function extractMainText(page) {
+    try {
+        return await page.evaluate(() => {
+            // Remove unwanted elements
+            const elementsToRemove = [
+                'script',
+                'style',
+                'noscript',
+                'iframe',
+                'header',
+                'footer',
+                'nav',
+                '.ad',
+                '.ads',
+                '.advertisement',
+                '#cookie-banner',
+                '.cookie-notice'
+            ];
+            elementsToRemove.forEach(selector => {
+                document.querySelectorAll(selector).forEach(el => el.remove());
+            });
+            // Get text content
+            const content = document.body.innerText;
+            // Clean up whitespace
+            return content
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line.length > 0)
+                .join('\n');
+        });
+    }
+    catch (error) {
+        logger.error('Failed to extract text content:', error);
+        throw new Error(`Text extraction failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+export async function extractLinks(page) {
+    try {
+        return await page.evaluate(() => {
+            return Array.from(document.querySelectorAll('a[href]'))
+                .map(a => ({
+                text: a.textContent?.trim() || '',
+                url: a.getAttribute('href') || ''
+            }))
+                .filter(link => link.text &&
+                link.url &&
+                !link.url.startsWith('#') &&
+                !link.url.startsWith('javascript:'));
+        });
+    }
+    catch (error) {
+        logger.error('Failed to extract links:', error);
+        throw new Error(`Link extraction failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+export async function extractMetadata(page) {
+    try {
+        return await page.evaluate(() => {
+            const metadata = {};
+            // Standard meta tags
+            document.querySelectorAll('meta[name], meta[property]').forEach(meta => {
+                const name = meta.getAttribute('name') || meta.getAttribute('property');
+                const content = meta.getAttribute('content');
+                if (name && content) {
+                    metadata[name] = content;
+                }
+            });
+            // Title
+            const title = document.title;
+            if (title) {
+                metadata['title'] = title;
+            }
+            // Canonical URL
+            const canonical = document.querySelector('link[rel="canonical"]');
+            if (canonical?.href) {
+                metadata['canonical'] = canonical.href;
+            }
+            return metadata;
+        });
+    }
+    catch (error) {
+        logger.error('Failed to extract metadata:', error);
+        throw new Error(`Metadata extraction failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 //# sourceMappingURL=content.js.map

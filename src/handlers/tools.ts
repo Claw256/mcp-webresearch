@@ -1,8 +1,7 @@
-import { 
-    CallToolRequestSchema, 
-    McpError, 
-    ErrorCode,
-    TextContent
+import {
+    CallToolRequestSchema,
+    McpError,
+    ErrorCode
 } from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ToolHandlerResponse, SearchResult, PageResult, ResearchResult } from "../types/index.js";
@@ -23,10 +22,6 @@ const MCP_ERRORS = {
     MethodNotFound: ErrorCode.MethodNotFound,
     InternalError: ErrorCode.InternalError
 } as const;
-
-interface SearchArguments {
-    query: string;
-}
 
 interface VisitPageArguments {
     url: string;

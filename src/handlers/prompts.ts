@@ -5,7 +5,7 @@ import {
     ErrorCode 
 } from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { PromptName, AgenticResearchArgs } from "../types/index.js";
+import { PromptName } from "../types/index.js";
 import { Logger } from '../utils/logger.js';
 
 const logger = new Logger('PromptHandler');
