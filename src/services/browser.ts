@@ -196,10 +196,19 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             throw new Error('URL exceeds maximum length');
         }
 
-        // Set consent cookie for the appropriate domain
+        // Always set consent cookie for google.com
+        await page.context().addCookies([
+            {
+                name: 'CONSENT',
+                value: 'YES+cb.20240107-11-p0.en+FX',
+                domain: '.google.com',
+                path: '/'
+            }
+        ]);
+
+        // Set additional consent cookies for regional domains
         const domain = parsedUrl.hostname;
-        if (CONSENT_REGIONS.some(region => domain.includes(region))) {
-            // Set both specific and general domain cookies for better coverage
+        if (CONSENT_REGIONS.some(region => domain.includes(region)) && domain !== 'google.com') {
             const specificDomain = `.${domain}`;
             const generalDomain = `.${domain.split('.').slice(-2).join('.')}`;
             
@@ -217,10 +226,10 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                     path: '/'
                 }
             ]);
-            
-            // Wait briefly for cookies to take effect
-            await page.waitForTimeout(1000);
         }
+
+        // Wait briefly for cookies to take effect
+        await page.waitForTimeout(1000);
 
         let attempts = 0;
         while (attempts < BROWSER_CONFIG.maxRetries) {
