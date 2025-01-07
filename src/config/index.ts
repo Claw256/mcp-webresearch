@@ -3,7 +3,7 @@ import * as os from 'os';
 
 // Server configuration
 export const SERVER_CONFIG = {
-    maxConcurrentBrowsers: 5, // Increased for better concurrency
+    maxConcurrentBrowsers: 1, // Reduced to prevent resource contention
     maxSessionsPerUser: 5,
     maxRequestsPerMinute: 60,
     screenshotDir: path.join(os.tmpdir(), 'mcp-webresearch-screenshots'),
@@ -14,37 +14,35 @@ export const SERVER_CONFIG = {
 
 // Browser configuration
 export const BROWSER_CONFIG = {
-    maxRetries: 3, // Reduced to fail faster
-    initialRetryDelay: 1000, // Base delay for exponential backoff
-    maxRetryDelay: 10000, // Maximum retry delay
-    navigationTimeout: 30000, // Reduced to 30s for faster failure
-    networkIdleTimeout: 15000, // Reduced to 15s
+    maxRetries: 2, // Further reduced for faster failure
+    initialRetryDelay: 500, // Shorter initial delay
+    maxRetryDelay: 2000, // Shorter maximum delay
+    navigationTimeout: 15000, // Reduced to 15s
+    networkIdleTimeout: 5000, // Reduced to 5s
     minContentWords: 10,
-    maxPageLoadTime: 45000, // Reduced to 45s
-    resourceTimeout: 10000, // New: timeout for individual resources
-    maxMemoryMB: 1024, // New: memory limit per browser instance
-    healthCheckInterval: 30000, // New: health check interval
-    gcInterval: 300000, // New: garbage collection interval
+    maxPageLoadTime: 20000, // Reduced to 20s
+    resourceTimeout: 5000, // Reduced to 5s
+    maxMemoryMB: 512, // Reduced memory limit
+    healthCheckInterval: 10000, // More frequent health checks
+    gcInterval: 60000, // More frequent garbage collection
 };
 
 // Performance thresholds
 export const PERFORMANCE_CONFIG = {
-    // New configuration section
-    cpuUsageThreshold: 80, // Percentage
-    memoryUsageThreshold: 80, // Percentage
-    slowRequestThreshold: 5000, // ms
-    criticalRequestThreshold: 15000, // ms
-    maxQueueSize: 100,
-    queueTimeoutMs: 30000,
+    cpuUsageThreshold: 70, // Lower threshold
+    memoryUsageThreshold: 70, // Lower threshold
+    slowRequestThreshold: 3000, // Reduced threshold
+    criticalRequestThreshold: 10000, // Reduced threshold
+    maxQueueSize: 1, // Only allow one request at a time
+    queueTimeoutMs: 15000, // Reduced queue timeout
 };
 
 // Circuit breaker configuration
 export const CIRCUIT_BREAKER_CONFIG = {
-    // New configuration section
-    failureThreshold: 5, // Number of failures before opening
-    resetTimeout: 30000, // Time before attempting to close circuit
-    halfOpenMaxRequests: 3, // Max requests in half-open state
-    monitoringInterval: 10000, // Health check interval
+    failureThreshold: 2, // Reduced threshold
+    resetTimeout: 15000, // Shorter reset time
+    halfOpenMaxRequests: 1, // More conservative
+    monitoringInterval: 5000, // More frequent monitoring
 };
 
 // Session configuration
@@ -57,7 +55,7 @@ export const SESSION_CONFIG = {
 // Security configuration
 export const SECURITY_CONFIG = {
     allowedProtocols: ['http:', 'https:'],
-    allowedDomains: ['*'], // Can be restricted if needed
+    allowedDomains: ['*'],
     maxUrlLength: 2048,
     rateLimitWindowMs: 60000,
     sanitizeOptions: {
@@ -66,10 +64,9 @@ export const SECURITY_CONFIG = {
             'a': ['href']
         }
     },
-    // New security settings
-    maxRedirects: 5,
-    requestTimeout: 30000,
-    maxResponseSize: 10 * 1024 * 1024, // 10MB
+    maxRedirects: 2, // Reduced redirects
+    requestTimeout: 15000, // Reduced timeout
+    maxResponseSize: 5 * 1024 * 1024, // Reduced to 5MB
 };
 
 // Regions that commonly show consent dialogs
