@@ -49,6 +49,9 @@ class BrowserPool {
     private logger: Logger;
     private circuitBreaker: CircuitBreaker;
     private requestQueue: Array<{ resolve: (page: Page) => void; reject: (error: Error) => void; timestamp: number }> = [];
+    private maintenanceInterval?: NodeJS.Timeout;
+    private circuitBreakerInterval?: NodeJS.Timeout;
+    private performanceInterval?: NodeJS.Timeout;
 
     private constructor() {
         this.logger = new Logger('BrowserPool');
@@ -108,7 +111,6 @@ class BrowserPool {
                 }
             });
 
-            // Set timeouts
             context.setDefaultTimeout(BROWSER_CONFIG.navigationTimeout);
             context.setDefaultNavigationTimeout(BROWSER_CONFIG.navigationTimeout);
 
@@ -117,12 +119,10 @@ class BrowserPool {
                 const request = route.request();
                 const resourceType = request.resourceType();
 
-                // Block unnecessary resources
                 if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
                     return route.abort();
                 }
 
-                // Set timeout for resource requests
                 const timeout = setTimeout(() => {
                     route.abort('timedout');
                 }, BROWSER_CONFIG.resourceTimeout);
@@ -138,7 +138,6 @@ class BrowserPool {
 
             const page = await context.newPage();
 
-            // Configure error handling
             page.on('pageerror', (error) => {
                 this.logger.error('Page error:', error);
             });
@@ -185,7 +184,7 @@ class BrowserPool {
     }
 
     private startCircuitBreakerMonitoring() {
-        setInterval(() => {
+        this.circuitBreakerInterval = setInterval(() => {
             const now = Date.now();
             if (
                 this.circuitBreaker.state === 'OPEN' &&
@@ -199,9 +198,11 @@ class BrowserPool {
     }
 
     private startPerformanceMonitoring() {
-        setInterval(async () => {
+        this.performanceInterval = setInterval(async () => {
             for (const instance of this.pool) {
                 try {
+                    if (instance.page.isClosed()) continue;
+
                     const metrics = await instance.page.evaluate(() => ({
                         memory: (performance as any).memory?.usedJSHeapSize || 0,
                         timing: performance.timing
@@ -215,6 +216,7 @@ class BrowserPool {
                     }
                 } catch (error) {
                     this.logger.error('Performance monitoring error:', error);
+                    instance.failureCount++;
                 }
             }
         }, BROWSER_CONFIG.healthCheckInterval);
@@ -222,12 +224,10 @@ class BrowserPool {
 
     async acquirePage(): Promise<Page> {
         try {
-            // Check circuit breaker
             if (this.circuitBreaker.state === 'OPEN') {
                 throw new Error('Circuit breaker is open, requests are blocked');
             }
 
-            // Check queue size
             if (this.requestQueue.length >= PERFORMANCE_CONFIG.maxQueueSize) {
                 throw new Error('Request queue is full');
             }
@@ -237,7 +237,6 @@ class BrowserPool {
                 this.requestQueue.push(queueEntry);
                 this.processQueue();
 
-                // Set queue timeout
                 setTimeout(() => {
                     const index = this.requestQueue.indexOf(queueEntry);
                     if (index !== -1) {
@@ -296,17 +295,13 @@ class BrowserPool {
 
     private async recycleBrowserInstance(instance: BrowserInstance): Promise<void> {
         try {
+            if (!instance.page.isClosed()) {
+                await instance.page.close();
+            }
+
             const context = instance.context;
             await context.clearCookies();
             await context.clearPermissions();
-            
-            // Close all pages except the main one
-            const pages = context.pages();
-            await Promise.all(
-                pages
-                    .filter(p => p !== instance.page)
-                    .map(p => p.close().catch(() => {}))
-            );
 
             const page = await context.newPage();
             instance.page = page;
@@ -315,11 +310,16 @@ class BrowserPool {
             instance.memoryUsage = 0;
         } catch (error) {
             this.logger.error('Failed to recycle browser instance:', error);
-            const newInstance = await this.createBrowserInstance();
-            const index = this.pool.indexOf(instance);
-            if (index !== -1) {
-                await this.cleanupInstance(instance);
-                this.pool[index] = newInstance;
+            try {
+                const newInstance = await this.createBrowserInstance();
+                const index = this.pool.indexOf(instance);
+                if (index !== -1) {
+                    await this.cleanupInstance(instance);
+                    this.pool[index] = newInstance;
+                }
+            } catch (recycleError) {
+                this.logger.error('Failed to create new instance during recycle:', recycleError);
+                throw recycleError;
             }
         }
     }
@@ -351,7 +351,7 @@ class BrowserPool {
     }
 
     private startMaintenanceInterval(): void {
-        setInterval(() => {
+        this.maintenanceInterval = setInterval(() => {
             this.cleanupExpiredInstances().catch(error => {
                 this.logger.error('Error during maintenance cleanup:', error);
             });
@@ -360,6 +360,12 @@ class BrowserPool {
 
     async cleanup(): Promise<void> {
         try {
+            // Clear all intervals
+            if (this.maintenanceInterval) clearInterval(this.maintenanceInterval);
+            if (this.circuitBreakerInterval) clearInterval(this.circuitBreakerInterval);
+            if (this.performanceInterval) clearInterval(this.performanceInterval);
+
+            // Cleanup all instances
             await Promise.all(this.pool.map(instance => this.cleanupInstance(instance)));
             this.pool = [];
         } catch (error) {
@@ -392,7 +398,6 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
     const logger = new Logger('Navigation');
 
     try {
-        // Step 1: URL validation
         const parsedUrl = new URL(url);
         if (!SECURITY_CONFIG.allowedProtocols.includes(parsedUrl.protocol)) {
             throw new Error(`Unsupported protocol: ${parsedUrl.protocol}`);
@@ -402,7 +407,6 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             throw new Error('URL exceeds maximum length');
         }
 
-        // Step 2: Set up consent cookies
         const domain = parsedUrl.hostname;
         const consentCookies = [];
 
@@ -433,14 +437,21 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
             );
         }
 
+        if (page.isClosed()) {
+            throw new Error('Page was closed before navigation');
+        }
+
         await page.context().addCookies(consentCookies);
 
-        // Step 3: Navigation with exponential backoff retry
         let attempts = 0;
         let delay = BROWSER_CONFIG.initialRetryDelay;
 
         while (attempts < BROWSER_CONFIG.maxRetries) {
             try {
+                if (page.isClosed()) {
+                    throw new Error('Page was closed during navigation');
+                }
+
                 const response = await page.goto(url, {
                     waitUntil: 'domcontentloaded',
                     timeout: BROWSER_CONFIG.navigationTimeout
@@ -454,28 +465,29 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                     throw new Error(`HTTP ${response.status()}: ${response.statusText()}`);
                 }
 
-                // Enhanced network idle handling
                 const networkIdlePromise = page.waitForLoadState('networkidle', {
                     timeout: BROWSER_CONFIG.networkIdleTimeout
                 }).catch(() => 'timeout');
 
-                const timeoutPromise2 = new Promise(resolve =>
+                const timeoutPromise = new Promise(resolve =>
                     setTimeout(() => resolve('timeout'), BROWSER_CONFIG.networkIdleTimeout)
                 );
 
-                const networkResult = await Promise.race([networkIdlePromise, timeoutPromise2]);
+                const networkResult = await Promise.race([networkIdlePromise, timeoutPromise]);
                 
                 if (networkResult === 'timeout') {
                     logger.warn('Network idle timeout reached, proceeding with validation');
                 }
 
-                // Page validation
+                if (page.isClosed()) {
+                    throw new Error('Page was closed during network idle wait');
+                }
+
                 const validation = await validatePage(page);
                 if (!validation.isValid) {
                     throw new Error(validation.error);
                 }
 
-                // Security check for redirects
                 const finalUrl = page.url();
                 if (finalUrl !== url) {
                     logger.warn(`Page redirected from ${url} to ${finalUrl}`);
@@ -497,14 +509,9 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
 
                 logger.warn(`Navigation attempt ${attempts} failed: ${errorMessage}, retrying...`);
                 
-                // Exponential backoff with jitter
                 const jitter = Math.random() * 1000;
                 delay = Math.min(delay * 2 + jitter, BROWSER_CONFIG.maxRetryDelay);
-                if (!page.isClosed()) {
-                    await page.waitForTimeout(delay);
-                } else {
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                }
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
     } catch (error) {
@@ -514,6 +521,13 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
 }
 
 async function validatePage(page: Page): Promise<ValidationResult> {
+    if (page.isClosed()) {
+        return {
+            isValid: false,
+            error: 'Page was closed during validation'
+        };
+    }
+
     try {
         const validation = await page.evaluate((): PageValidation => {
             const botProtectionSelectors = [
@@ -572,7 +586,6 @@ async function validatePage(page: Page): Promise<ValidationResult> {
                 bodyText.toLowerCase().includes(indicator)
             );
 
-            // Collect performance metrics
             const performanceMetrics = {
                 loadTime: performance.now(),
                 resourceCount: performance.getEntriesByType('resource').length,
@@ -617,7 +630,6 @@ async function validatePage(page: Page): Promise<ValidationResult> {
             };
         }
 
-        // Performance validation
         if (validation.performanceMetrics.loadTime > PERFORMANCE_CONFIG.criticalRequestThreshold) {
             return {
                 isValid: false,
@@ -646,15 +658,16 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
     const logger = new Logger('ConsentHandler');
 
     try {
+        if (page.isClosed()) {
+            return;
+        }
+
         const currentUrl = page.url();
         if (!CONSENT_REGIONS.some(domain => currentUrl.includes(domain))) {
             return;
         }
 
-        if (page.isClosed()) {
-            return;
-        }
-        await page.waitForTimeout(2000);
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
         const consentSelectors = [
             'div[role="dialog"][aria-modal="true"]',
@@ -666,8 +679,12 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             'div[aria-modal="true"]:has(button:has-text("Accept all"))'
         ];
 
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < 2; attempt++) {
             try {
+                if (page.isClosed()) {
+                    return;
+                }
+
                 const hasConsent = await page.$(consentSelectors.join(', ')).then(Boolean);
                 if (!hasConsent) {
                     return;
@@ -692,34 +709,35 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
                     logger.warn('Failed to click consent button, retrying...');
                 });
 
+                if (page.isClosed()) {
+                    return;
+                }
+
                 await page.waitForFunction(() => {
                     return !document.querySelector('div[role="dialog"]');
-                }, { timeout: 5000 }).catch(() => {
+                }, { timeout: 3000 }).catch(() => {
                     logger.warn('Dialog did not disappear after clicking accept');
                 });
 
-                if (!page.isClosed()) {
-                    if (!page.isClosed()) {
-                        await page.waitForTimeout(1000);
-                    } else {
-                        return;
-                    }
-                } else {
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                if (page.isClosed()) {
                     return;
                 }
+
                 const consentStillPresent = await page.$(consentSelectors.join(', ')).then(Boolean);
                 if (!consentStillPresent) {
                     break;
                 }
 
-                if (attempt < 2) {
+                if (attempt < 1) {
                     logger.warn(`Consent still present after attempt ${attempt + 1}, retrying...`);
-                    await page.waitForTimeout(1000);
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
             } catch (error) {
                 logger.warn(`Consent dismissal attempt ${attempt + 1} failed:`, error);
-                if (attempt < 2) {
-                    await page.waitForTimeout(1000);
+                if (attempt < 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
             }
         }
