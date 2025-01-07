@@ -1,4 +1,4 @@
-import { CallToolRequestSchema, McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema, McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { ensureBrowser, dismissGoogleConsent, safePageNavigation, cleanupPage } from "../services/browser.js";
 import { takeScreenshotWithSizeLimit, saveScreenshot } from "../services/screenshot.js";
 import { extractContentAsMarkdown } from "../services/content.js";
@@ -33,6 +33,53 @@ function createSuccessResponse(text) {
     });
 }
 export function registerToolHandlers(server) {
+    // Register tool listing handler
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+        tools: [
+            {
+                name: "search_google",
+                description: "Search Google and return results",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        query: {
+                            type: "string",
+                            description: "Search query"
+                        }
+                    },
+                    required: ["query"]
+                }
+            },
+            {
+                name: "visit_page",
+                description: "Visit a webpage and extract its content",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        url: {
+                            type: "string",
+                            description: "URL to visit"
+                        },
+                        takeScreenshot: {
+                            type: "boolean",
+                            description: "Whether to take a screenshot of the page"
+                        }
+                    },
+                    required: ["url"]
+                }
+            },
+            {
+                name: "take_screenshot",
+                description: "Take a screenshot of the current page",
+                inputSchema: {
+                    type: "object",
+                    properties: {},
+                    required: []
+                }
+            }
+        ]
+    }));
+    // Register tool call handler
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let page;
         try {
