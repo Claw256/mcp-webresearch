@@ -1,73 +1,64 @@
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import * as path from 'path';
+import * as os from 'os';
 
-// Configuration constants for session management
-export const MAX_RESULTS_PER_SESSION = 100;  // Maximum number of results to store per session
-export const MAX_RETRIES = 3;                // Maximum retry attempts for operations
-export const RETRY_DELAY = 1000;             // Delay between retries in milliseconds
+// Server configuration
+export const SERVER_CONFIG = {
+    maxConcurrentBrowsers: 3,
+    maxSessionsPerUser: 5,
+    maxRequestsPerMinute: 60,
+    screenshotDir: path.join(os.tmpdir(), 'mcp-webresearch-screenshots'),
+    screenshotRetentionHours: 24,
+    maxScreenshotSizeBytes: 5 * 1024 * 1024, // 5MB
+    maxTotalScreenshotStorageBytes: 100 * 1024 * 1024, // 100MB
+};
 
-// Available tools for web research functionality
-export const TOOLS: Tool[] = [
-    {
-        name: "search_google",
-        description: "Search Google for a query",
-        inputSchema: {
-            type: "object",
-            properties: {
-                query: { type: "string", description: "Search query" },
-            },
-            required: ["query"],
-        },
-    },
-    {
-        name: "visit_page",
-        description: "Visit a webpage and extract its content",
-        inputSchema: {
-            type: "object",
-            properties: {
-                url: { type: "string", description: "URL to visit" },
-                takeScreenshot: { type: "boolean", description: "Whether to take a screenshot" },
-            },
-            required: ["url"],
-        },
-    },
-    {
-        name: "take_screenshot",
-        description: "Take a screenshot of the current page",
-        inputSchema: {
-            type: "object",
-            properties: {},  // No parameters needed
-        },
-    },
-];
+// Browser configuration
+export const BROWSER_CONFIG = {
+    maxRetries: 3,
+    retryDelay: 1000,
+    navigationTimeout: 15000,
+    networkIdleTimeout: 5000,
+    minContentWords: 10,
+    maxPageLoadTime: 30000,
+};
 
-// Configure available prompts with their specifications
-export const PROMPTS = {
-    "agentic-research": {
-        name: "agentic-research" as const,
-        description: "Conduct iterative web research on a topic, exploring it thoroughly through multiple steps while maintaining a dialogue with the user",
-        arguments: [
-            {
-                name: "topic",
-                description: "The topic or question to research",
-                required: true
-            }
-        ]
+// Session configuration
+export const SESSION_CONFIG = {
+    maxResultsPerSession: 100,
+    maxSessionAgeHours: 24,
+    maxContentSizeBytes: 1024 * 1024, // 1MB per content item
+};
+
+// Security configuration
+export const SECURITY_CONFIG = {
+    allowedProtocols: ['http:', 'https:'],
+    allowedDomains: ['*'], // Can be restricted if needed
+    maxUrlLength: 2048,
+    rateLimitWindowMs: 60000,
+    sanitizeOptions: {
+        allowedTags: ['b', 'i', 'em', 'strong', 'a'],
+        allowedAttributes: {
+            'a': ['href']
+        }
     }
-} as const;
+};
 
-// Regions that commonly show cookie/consent banners
+// Regions that commonly show consent dialogs
 export const CONSENT_REGIONS = [
-    // Europe
-    '.google.de', '.google.fr', '.google.co.uk',
-    '.google.it', '.google.es', '.google.nl',
-    '.google.pl', '.google.ie', '.google.dk',
-    '.google.no', '.google.se', '.google.fi',
-    '.google.at', '.google.ch', '.google.be',
-    '.google.pt', '.google.gr', '.google.com.tr',
-    // Asia Pacific
-    '.google.co.id', '.google.com.sg', '.google.co.th',
-    '.google.com.my', '.google.com.ph', '.google.com.au',
-    '.google.co.nz', '.google.com.vn',
-    // Generic domains
-    '.google.com', '.google.co'
+    'google.co.uk',
+    'google.de',
+    'google.fr',
+    'google.it',
+    'google.es',
+    'google.nl',
+    'google.pl',
+    'google.ie',
+    'google.dk',
+    'google.se',
+    'google.no',
+    'google.fi',
+    'google.pt',
+    'google.ch',
+    'google.at',
+    'google.be'
 ];

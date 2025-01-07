@@ -1,110 +1,102 @@
-import { ListResourcesRequestSchema, ReadResourceRequestSchema, McpError, ErrorCode, Resource } from "@modelcontextprotocol/sdk/types.js";
+import { 
+    ListResourcesRequestSchema, 
+    ReadResourceRequestSchema, 
+    McpError, 
+    ErrorCode, 
+    Resource 
+} from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { getCurrentSession, getResult } from "../services/session.js";
-import * as fs from 'fs';
+import { promises as fs } from 'fs';
+import { Logger } from '../utils/logger.js';
+
+const logger = new Logger('ResourceHandler');
+
+interface ResourceResponse {
+    resources: Resource[];
+}
+
+interface ResourceContent {
+    uri: string;
+    mimeType?: string;
+    text?: string;
+    base64?: string;
+}
+
+interface ReadResourceResponse {
+    contents: ResourceContent[];
+}
 
 export function registerResourceHandlers(server: Server): void {
-    // Register handler for resource listing requests
+    // List available resources
     server.setRequestHandler(ListResourcesRequestSchema, async () => {
         const currentSession = getCurrentSession();
-        
-        // Return empty list if no active session
-        if (!currentSession) {
-            return { resources: [] };
+        const resources: Resource[] = [];
+
+        if (currentSession?.results) {
+            currentSession.results.forEach((_result: unknown, index: number) => {
+                resources.push({
+                    uri: `research://screenshots/${index}`,
+                    name: `Screenshot ${index + 1}`,
+                    mimeType: 'image/png',
+                    description: `Screenshot from research result ${index + 1}`
+                });
+            });
         }
 
-        // Compile list of available resources
-        const resources: Resource[] = [
-            // Add session summary resource
-            {
-                uri: "research://current/summary",
-                name: "Current Research Session Summary",
-                description: "Summary of the current research session including queries and results",
-                mimeType: "application/json"
-            },
-            // Add screenshot resources if available
-            ...currentSession.results
-                .map((r, i): Resource | undefined => r.screenshotPath ? {
-                    uri: `research://screenshots/${i}`,
-                    name: `Screenshot of ${r.title}`,
-                    description: `Screenshot taken from ${r.url}`,
-                    mimeType: "image/png"
-                } : undefined)
-                .filter((r): r is Resource => r !== undefined)
-        ];
-
-        return { resources };
+        return {
+            resources
+        } satisfies ResourceResponse;
     });
 
-    // Register handler for resource content requests
+    // Read specific resource
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-        const uri = request.params.uri.toString();
+        const { uri } = request.params;
+        const match = uri.match(/^research:\/\/screenshots\/(\d+)$/);
 
-        // Handle session summary requests
-        if (uri === "research://current/summary") {
-            const currentSession = getCurrentSession();
-            if (!currentSession) {
-                throw new McpError(
-                    ErrorCode.InvalidRequest,
-                    "No active research session"
-                );
-            }
+        if (!match) {
+            throw new McpError(
+                ErrorCode.InvalidRequest,
+                `Unknown resource: ${uri}`
+            );
+        }
+
+        const index = parseInt(match[1], 10);
+        const currentSession = getCurrentSession();
+
+        if (!currentSession) {
+            throw new McpError(
+                ErrorCode.InvalidRequest,
+                "No active research session"
+            );
+        }
+
+        const result = getResult(currentSession.id!, index);
+
+        if (!result?.screenshotPath) {
+            throw new McpError(
+                ErrorCode.InvalidRequest,
+                `No screenshot available at index: ${index}`
+            );
+        }
+
+        try {
+            const imageBuffer = await fs.readFile(result.screenshotPath);
+            const base64Image = imageBuffer.toString('base64');
 
             return {
                 contents: [{
                     uri,
-                    mimeType: "application/json",
-                    text: JSON.stringify({
-                        query: currentSession.query,
-                        resultCount: currentSession.results.length,
-                        lastUpdated: currentSession.lastUpdated,
-                        results: currentSession.results.map(r => ({
-                            title: r.title,
-                            url: r.url,
-                            timestamp: r.timestamp,
-                            screenshotPath: r.screenshotPath
-                        }))
-                    }, null, 2)
+                    mimeType: 'image/png',
+                    base64: base64Image
                 }]
-            };
+            } satisfies ReadResourceResponse;
+        } catch (error) {
+            logger.error('Failed to read screenshot:', error);
+            throw new McpError(
+                ErrorCode.InternalError,
+                `Failed to read screenshot: ${error instanceof Error ? error.message : String(error)}`
+            );
         }
-
-        // Handle screenshot requests
-        if (uri.startsWith("research://screenshots/")) {
-            const index = parseInt(uri.split("/").pop() || "", 10);
-            const result = getResult(index);
-
-            if (!result?.screenshotPath) {
-                throw new McpError(
-                    ErrorCode.InvalidRequest,
-                    `No screenshot available at index: ${index}`
-                );
-            }
-
-            try {
-                const screenshotData = await fs.promises.readFile(result.screenshotPath);
-                const base64Data = screenshotData.toString('base64');
-
-                return {
-                    contents: [{
-                        uri,
-                        mimeType: "image/png",
-                        blob: base64Data
-                    }]
-                };
-            } catch (error) {
-                const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-                throw new McpError(
-                    ErrorCode.InternalError,
-                    `Failed to read screenshot: ${errorMessage}`
-                );
-            }
-        }
-
-        // Handle unknown resource types
-        throw new McpError(
-            ErrorCode.InvalidRequest,
-            `Unknown resource: ${uri}`
-        );
     });
 }

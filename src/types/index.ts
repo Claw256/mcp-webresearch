@@ -11,6 +11,7 @@ export interface ResearchResult {
 
 // Define structure for research session data
 export interface ResearchSession {
+    id?: string;                // Session identifier
     query: string;              // Search query that initiated the session
     results: ResearchResult[];  // Collection of research results
     lastUpdated: string;        // Timestamp of last update
