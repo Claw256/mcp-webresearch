@@ -14,10 +14,10 @@ export const SERVER_CONFIG = {
 
 // Browser configuration
 export const BROWSER_CONFIG = {
-    maxRetries: 5,
-    retryDelay: 2000,
-    navigationTimeout: 30000,
-    networkIdleTimeout: 10000,
+    maxRetries: 3,
+    retryDelay: 1000,
+    navigationTimeout: 60000,  // Doubled to handle consent dialogs
+    networkIdleTimeout: 15000, // Increased for slower connections
     minContentWords: 10,
     maxPageLoadTime: 60000,
 };

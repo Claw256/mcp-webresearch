@@ -327,8 +327,8 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             return;
         }
 
-        // Wait for consent dialog with increased timeout
-        await page.waitForTimeout(5000);
+        // Quick check for consent dialog
+        await page.waitForTimeout(2000);
 
         // Specific Google consent dialog selectors based on current structure
         const consentSelectors = [
