@@ -21,6 +21,9 @@ Previous work on timeout issues:
 - Removed custom stealth implementation in favor of patchright's built-in features
 - Updated type system to use patchright consistently
 - Improved documentation for browser requirements
+- Configured non-headless mode for better undetectability
+- Simplified browser context settings per patchright recommendations
+- Removed potentially detectable browser options
 
 ### 2. Core Timeout Handling
 - Added proper timeout cleanup to prevent memory leaks

@@ -17,6 +17,9 @@
    - Limited concurrent browser instances
    - Memory usage limits per instance
    - Resource cleanup requirements
+   - Non-headless mode for undetectability
+   - Simplified context settings
+   - Patchright's recommended configuration
 
 2. Timeout Constraints:
    - Navigation timeout: 10s
