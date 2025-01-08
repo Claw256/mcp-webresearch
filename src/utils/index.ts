@@ -4,37 +4,127 @@ import { Logger } from "./logger.js";
 
 const logger = new Logger('Utils');
 
+class TimeoutError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'TimeoutError';
+    }
+}
+
+const NON_RETRYABLE_ERRORS = [
+    'timeout',
+    'timed out',
+    'Session closed',
+    'Target closed',
+    'Browser has been closed',
+    'Navigation failed',
+    'ERR_CONNECTION_TIMED_OUT',
+    'net::ERR_CONNECTION_TIMED_OUT',
+    'net::ERR_CONNECTION_CLOSED',
+    'net::ERR_CONNECTION_RESET',
+    'net::ERR_CONNECTION_REFUSED',
+    'net::ERR_NAME_NOT_RESOLVED'
+];
+
 /**
  * Generic retry mechanism for handling transient failures
  * @param operation Operation to retry
  * @param maxRetries Number of retry attempts (default: from BROWSER_CONFIG)
  * @param delay Delay between retries in ms (default: from BROWSER_CONFIG)
+ * @param timeout Optional timeout in ms
  */
 export async function withRetry<T>(
     operation: () => Promise<T>,
     maxRetries: number = BROWSER_CONFIG.maxRetries,
-    delay: number = BROWSER_CONFIG.initialRetryDelay
+    delay: number = BROWSER_CONFIG.initialRetryDelay,
+    timeout?: number
 ): Promise<T> {
     let lastError: Error | undefined;
+    let timeoutId: NodeJS.Timeout | undefined;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            return await operation();
-        } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-            
-            if (attempt < maxRetries) {
-                logger.warn(`Attempt ${attempt} failed, retrying in ${delay}ms:`, lastError);
-                await new Promise(resolve => setTimeout(resolve, delay));
+    try {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const operationPromise = operation();
+
+                if (timeout) {
+                    const timeoutPromise = new Promise<never>((_, reject) => {
+                        timeoutId = setTimeout(() => {
+                            timeoutId = undefined;
+                            reject(new TimeoutError('Operation timed out'));
+                        }, timeout);
+                    });
+
+                    try {
+                        return await Promise.race([operationPromise, timeoutPromise]);
+                    } finally {
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            timeoutId = undefined;
+                        }
+                    }
+                } else {
+                    return await operationPromise;
+                }
+            } catch (error) {
+                lastError = error instanceof Error ? error : new Error(String(error));
+                
+                // Check for non-retryable errors
+                if (lastError instanceof TimeoutError || 
+                    NON_RETRYABLE_ERRORS.some(msg => lastError!.message.toLowerCase().includes(msg.toLowerCase()))) {
+                    logger.error('Non-retryable error encountered:', lastError);
+                    throw new McpError(ErrorCode.InternalError, `Operation failed: ${lastError.message}`);
+                }
+                
+                if (attempt < maxRetries) {
+                    // Use exponential backoff with jitter
+                    const jitter = Math.random() * 1000;
+                    const backoffDelay = Math.min(delay * Math.pow(2, attempt - 1) + jitter, BROWSER_CONFIG.maxRetryDelay);
+                    
+                    logger.warn(`Attempt ${attempt} failed, retrying in ${backoffDelay}ms:`, lastError);
+                    await new Promise(resolve => setTimeout(resolve, backoffDelay));
+                }
             }
         }
-    }
 
-    if (!lastError) {
-        lastError = new Error('Unknown error occurred during retry');
+        throw lastError || new Error('Unknown error occurred during retry');
+    } finally {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+        }
     }
+}
 
-    throw lastError;
+/**
+ * Execute an operation with a timeout
+ * @param operation Operation to execute
+ * @param timeout Timeout in milliseconds
+ */
+export async function withTimeout<T>(
+    operation: () => Promise<T>,
+    timeout: number
+): Promise<T> {
+    let timeoutId: NodeJS.Timeout | undefined;
+
+    try {
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+                timeoutId = undefined;
+                reject(new TimeoutError('Operation timed out'));
+            }, timeout);
+        });
+
+        return await Promise.race([operation(), timeoutPromise]);
+    } catch (error) {
+        if (error instanceof TimeoutError) {
+            throw new McpError(ErrorCode.InternalError, 'Operation timed out');
+        }
+        throw error;
+    } finally {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+        }
+    }
 }
 
 /**
@@ -159,7 +249,9 @@ export function debounce<T extends (...args: unknown[]) => unknown>(
     let timeout: ReturnType<typeof setTimeout> | undefined;
     
     return function(this: unknown, ...args: Parameters<T>): void {
-        clearTimeout(timeout);
+        if (timeout) {
+            clearTimeout(timeout);
+        }
         timeout = setTimeout(() => func.apply(this, args), wait);
     };
 }
