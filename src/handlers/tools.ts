@@ -8,6 +8,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ToolHandlerResponse, SearchResult, ResearchResult } from "../types/index.js";
 import { Page } from 'patchright';
 import { ensureBrowser, dismissGoogleConsent, safePageNavigation, cleanupPage } from "../services/browser.js";
+import { BROWSER_CONFIG } from "../config/index.js";
 import { takeScreenshotWithSizeLimit, saveScreenshot } from "../services/screenshot.js";
 import { extractContentAsMarkdown } from "../services/content.js";
 import { addResult, getCurrentSession, createSession } from "../services/session.js";
@@ -240,7 +241,28 @@ export function registerToolHandlers(server: Server): void {
                                     throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
                                 }
 
-                                await safePageNavigation(currentPage, args.url as string);
+                                // Find and click the link that matches the URL
+                                const targetUrl = args.url as string;
+                                const found = await currentPage.evaluate((url) => {
+                                    const links = Array.from(document.querySelectorAll('a'));
+                                    const targetLink = links.find(link => link.href === url);
+                                    if (targetLink) {
+                                        targetLink.click();
+                                        return true;
+                                    }
+                                    return false;
+                                }, targetUrl);
+
+                                if (!found) {
+                                    // If link not found, fall back to direct navigation
+                                    await safePageNavigation(currentPage, targetUrl);
+                                } else {
+                                    // Wait for navigation after clicking
+                                    await currentPage.waitForNavigation({
+                                        waitUntil: 'networkidle',
+                                        timeout: BROWSER_CONFIG.navigationTimeout
+                                    });
+                                }
                                 const title = await currentPage.title();
                                 const content = await extractContentAsMarkdown(currentPage);
 
