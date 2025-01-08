@@ -675,80 +675,101 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             }
         ]);
 
-        // Immediately inject consent handling script
-        await page.evaluate(() => {
-            window.addEventListener('DOMContentLoaded', () => {
-                const observer = new MutationObserver(() => {
-                    // Try to find the accept button using various selectors
-                    const selectors = [
-                        // Form-specific buttons
-                        'form[action*="consent"] button',
-                        'form button[role="button"]',
-                        // Class-specific buttons
-                        'button[class*="tHlp8d"]',
-                        'button[class*="VfPpkd-LgbsSe"]',
-                        // Role-specific buttons
-                        'button[role="button"]',
-                        'div[role="button"]'
-                    ];
+        // No need for the initial event listener since we're actively handling the dialog
 
-                    for (const selector of selectors) {
-                        const elements = Array.from(document.querySelectorAll(selector));
-                        const acceptButton = elements.find(el => {
-                            const text = el.textContent?.toLowerCase() || '';
-                            const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
-                            return (
-                                text.includes('accept all') ||
+        // Wait for and handle consent dialog with retries
+        let attempts = 0;
+        const maxAttempts = 3;
+        
+        while (attempts < maxAttempts) {
+            try {
+                // Check for consent dialog
+                const hasConsent = await page.waitForSelector('div[role="dialog"]', { timeout: 5000 })
+                    .then(() => true)
+                    .catch(() => false);
+
+                if (!hasConsent) {
+                    logger.info('No consent dialog found');
+                    return;
+                }
+
+                // Wait for dialog to be fully loaded
+                await page.waitForTimeout(1000);
+
+                // Try to find the accept button using specific attributes
+                const buttonFound = await page.evaluate(() => {
+                    const isAcceptButton = (el: Element) => {
+                        const text = el.textContent?.toLowerCase() || '';
+                        const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+                        const role = el.getAttribute('role')?.toLowerCase() || '';
+                        const dataId = el.getAttribute('data-ved')?.toLowerCase() || '';
+                        
+                        // Explicitly exclude language and settings buttons
+                        if (text.includes('language') ||
+                            text.includes('settings') ||
+                            text.includes('more options') ||
+                            text.includes('choose') ||
+                            ariaLabel.includes('language') ||
+                            ariaLabel.includes('settings') ||
+                            ariaLabel.includes('more options') ||
+                            ariaLabel.includes('choose')) {
+                            return false;
+                        }
+
+                        // Look for accept/agree text with strict class/data matching
+                        return (text.includes('accept all') ||
                                 text.includes('i agree') ||
                                 text.includes('agree to all') ||
                                 ariaLabel.includes('accept all') ||
                                 ariaLabel.includes('i agree') ||
-                                ariaLabel.includes('agree to all') ||
-                                (selector.includes('tHlp8d') && el.className.includes('tHlp8d'))
-                            );
-                        });
+                                ariaLabel.includes('agree to all')) &&
+                               (role === 'button' || el.tagName.toLowerCase() === 'button') &&
+                               (el.className.includes('tHlp8d') || dataId.includes('ved'));
+                    };
 
-                        if (acceptButton) {
-                            (acceptButton as HTMLElement).click();
-                            observer.disconnect();
-                            return;
-                        }
+                    // First try buttons with specific classes
+                    const buttons = Array.from(document.querySelectorAll('button.tHlp8d, button.VfPpkd-LgbsSe'));
+                    let acceptButton = buttons.find(isAcceptButton);
+
+                    // If not found, try all buttons
+                    if (!acceptButton) {
+                        const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
+                        acceptButton = allButtons.find(isAcceptButton);
                     }
-                });
-                
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true
-                });
-            });
-        });
 
-        // Quick check for existing dialog
-        const hasConsent = await page.$('div[role="dialog"]').then(Boolean);
-        if (hasConsent) {
-            await withTimeout(async () => {
-                // Try direct click with more specific selectors
-                await page.click([
-                    // Primary button selectors
-                    'form[action*="consent"] button:has-text("Accept all")',
-                    'form button[role="button"]:has-text("Accept all")',
-                    // Specific Google consent button classes
-                    'button[class*="tHlp8d"]',
-                    'button[class*="VfPpkd-LgbsSe"]',
-                    // Fallback selectors
-                    'div[role="dialog"] button[role="button"]:has-text("Accept all")',
-                    'div[role="dialog"] button:has-text("I agree")',
-                    'button:has-text("Agree to all")'
-                ].join(', ')).catch(() => null);
+                    if (acceptButton) {
+                        (acceptButton as HTMLElement).click();
+                        return true;
+                    }
+                    return false;
+                });
 
-                // Wait briefly for dialog to disappear
-                await page.waitForFunction(
-                    () => !document.querySelector('div[role="dialog"]'),
-                    { timeout: 1000 }
-                );
-            }, 2000).catch(() => {
-                logger.warn('Initial consent dismissal failed, continuing with navigation');
-            });
+                if (buttonFound) {
+                    // Wait for dialog to disappear
+                    await page.waitForFunction(
+                        () => !document.querySelector('div[role="dialog"]'),
+                        { timeout: 2000 }
+                    );
+                    return;
+                }
+
+                attempts++;
+                if (attempts < maxAttempts) {
+                    logger.warn(`Consent button not found, attempt ${attempts}/${maxAttempts}`);
+                    await page.waitForTimeout(1000);
+                }
+            } catch (error) {
+                attempts++;
+                if (attempts >= maxAttempts) {
+                    throw error;
+                }
+                logger.warn(`Consent handling attempt ${attempts}/${maxAttempts} failed:`, error);
+                await page.waitForTimeout(1000);
+            }
+        }
+
+        if (attempts >= maxAttempts) {
+            logger.warn('Failed to handle consent after all attempts');
         }
     } catch (error) {
         logger.error('Consent handling failed:', error);
