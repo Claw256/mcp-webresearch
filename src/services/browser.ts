@@ -110,10 +110,21 @@ class BrowserPool {
                 const request = route.request();
                 const resourceType = request.resourceType();
 
-                if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                // Allow images but block other heavy resources
+                if (['media', 'font', 'stylesheet'].includes(resourceType)) {
                     return route.abort();
                 }
 
+                // For images, set a timeout but don't block them
+                if (resourceType === 'image') {
+                    await withTimeout(
+                        () => route.continue(),
+                        BROWSER_CONFIG.resourceTimeout
+                    ).catch(() => route.abort('timedout'));
+                    return;
+                }
+
+                // For other resources (scripts, xhr, etc)
                 await withTimeout(
                     () => route.continue(),
                     BROWSER_CONFIG.resourceTimeout
