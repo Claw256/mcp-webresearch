@@ -1,4 +1,4 @@
-import { chromium, Browser, Page, BrowserContext } from 'playwright';
+import { chromium, Browser, Page, BrowserContext } from 'patchright';
 import {
     BROWSER_CONFIG,
     CONSENT_REGIONS,
@@ -9,7 +9,6 @@ import {
 } from '../config/index.js';
 import { Logger } from '../utils/logger.js';
 import { withTimeout } from "../utils/index.js";
-import { applyStealth, evasivePage } from '../utils/stealth.js';
 
 interface ValidationResult {
     isValid: boolean;
@@ -64,106 +63,27 @@ class BrowserPool {
 
     private async createBrowserInstance(): Promise<BrowserInstance> {
         try {
+            // Use patchright's undetected mode with recommended settings
             const browser = await chromium.launch({
+                channel: 'chrome',
                 headless: true,
                 args: [
-                    // Basic configuration
                     '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    
-                    // Performance optimizations
                     '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--disable-software-rasterizer',
-                    `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`,
-                    
-                    // Automation flags
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-features=IsolateOrigins,site-per-process,TranslateUI,BlinkGenPropertyTrees',
-                    
-                    // Privacy and fingerprinting
-                    '--disable-web-security',
-                    '--disable-features=IsolateOrigins,site-per-process',
-                    '--disable-site-isolation-trials',
-                    '--disable-features=AudioServiceOutOfProcess',
-                    '--disable-remote-fonts',
-                    '--disable-webgl',
-                    '--disable-threaded-scrolling',
-                    '--disable-webgl2',
-                    '--disable-notifications',
-                    '--disable-webrtc-hw-encoding',
-                    '--disable-webrtc-hw-decoding',
-                    
-                    // Additional stealth settings
-                    '--no-first-run',
-                    '--no-default-browser-check',
-                    '--no-zygote',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-canvas-aa',
-                    '--disable-2d-canvas-clip-aa',
-                    '--disable-gl-drawing-for-tests',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-mjpeg-decode',
-                    '--disable-accelerated-video-decode',
-                    '--disable-infobars',
-                    '--ignore-certificate-errors',
-                    '--ignore-certificate-errors-spki-list',
-                    '--ignore-ssl-errors',
-                    '--start-maximized',
-                    '--disable-background-networking',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-breakpad',
-                    '--disable-component-extensions-with-background-pages',
-                    '--disable-ipc-flooding-protection',
-                    '--disable-renderer-backgrounding',
-                    '--enable-features=NetworkService,NetworkServiceInProcess',
-                    '--force-color-profile=srgb',
-                    '--metrics-recording-only',
-                    '--mute-audio',
-                    
-                    // Hardware fingerprint randomization
-                    '--use-fake-device-for-media-stream',
-                    '--use-fake-ui-for-media-stream',
-                    
-                    // Additional privacy features
-                    '--deny-permission-prompts',
-                    '--disable-sync',
-                    '--disable-domain-reliability',
-                    '--disable-client-side-phishing-detection',
-                    '--disable-component-update',
-                    '--disable-default-apps',
-                    '--disable-dinosaur-easter-egg',
-                    '--disable-popup-blocking',
-                    '--disable-prompt-on-repost',
-                    '--disable-hang-monitor',
-                    '--disable-session-crashed-bubble',
-                    '--disable-bundled-ppapi-flash',
-                    '--disable-gaia-services',
-                    
-                    // Font rendering
-                    '--font-render-hinting=none',
-                    '--disable-font-subpixel-positioning',
-                    '--disable-lcd-text'
+                    `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`
                 ]
             });
 
+            // Use patchright's recommended context settings
             const context = await browser.newContext({
+                viewport: null,
                 ignoreHTTPSErrors: true,
-                javaScriptEnabled: true,
                 bypassCSP: true,
                 locale: 'en-US',
                 timezoneId: 'America/New_York',
                 permissions: ['geolocation'],
-                colorScheme: 'light',
-                deviceScaleFactor: 1,
-                hasTouch: false,
-                isMobile: false,
-                forcedColors: 'none'
+                colorScheme: 'light'
             });
-
-            // Apply stealth mode
-            await applyStealth(context);
 
             context.setDefaultTimeout(BROWSER_CONFIG.navigationTimeout);
             context.setDefaultNavigationTimeout(BROWSER_CONFIG.navigationTimeout);
@@ -183,9 +103,6 @@ class BrowserPool {
             });
 
             const page = await context.newPage();
-
-            // Apply evasive behaviors
-            await evasivePage(page);
 
             page.on('pageerror', (error) => {
                 this.logger.error('Page error:', error);
