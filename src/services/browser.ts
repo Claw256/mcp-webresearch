@@ -64,9 +64,10 @@ class BrowserPool {
     private async createBrowserInstance(): Promise<BrowserInstance> {
         try {
             // Use patchright's undetected mode with recommended settings
+            // Use patchright's recommended undetected configuration
             const browser = await chromium.launch({
                 channel: 'chrome',
-                headless: true,
+                headless: false, // patchright recommends headless: false for undetectability
                 args: [
                     '--no-sandbox',
                     '--disable-dev-shm-usage',
@@ -74,15 +75,11 @@ class BrowserPool {
                 ]
             });
 
-            // Use patchright's recommended context settings
+            // Use patchright's recommended context settings for undetectability
             const context = await browser.newContext({
-                viewport: null,
+                viewport: null, // patchright recommends null viewport for undetectability
                 ignoreHTTPSErrors: true,
-                bypassCSP: true,
-                locale: 'en-US',
-                timezoneId: 'America/New_York',
-                permissions: ['geolocation'],
-                colorScheme: 'light'
+                bypassCSP: true
             });
 
             context.setDefaultTimeout(BROWSER_CONFIG.navigationTimeout);
