@@ -25,23 +25,35 @@ const MCP_ERRORS = {
 } as const;
 
 function createErrorResponse(error: unknown): ToolHandlerResponse {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error('Operation failed:', error);
+    let mcpError: McpError;
+    
+    if (error instanceof McpError) {
+        mcpError = error;
+    } else {
+        const message = error instanceof Error ? error.message : String(error);
+        mcpError = new McpError(MCP_ERRORS.InternalError, message);
+    }
+
+    logger.error('Operation failed:', mcpError);
     return Promise.resolve({
         content: [{
             type: "text",
-            text: message
+            text: mcpError.message
         }],
-        isError: true
+        isError: true,
+        _meta: {
+            code: mcpError.code
+        }
     });
 }
 
-function createSuccessResponse(text: string): ToolHandlerResponse {
+function createSuccessResponse(text: string, meta?: Record<string, unknown>): ToolHandlerResponse {
     return Promise.resolve({
         content: [{
             type: "text",
             text
-        }]
+        }],
+        _meta: meta
     });
 }
 
@@ -186,20 +198,21 @@ export function registerToolHandlers(server: Server): void {
         try {
             page = await ensureBrowser();
             if (!page) {
-                throw new McpError(MCP_ERRORS.InternalError, 'Failed to initialize browser');
+                throw new McpError(MCP_ERRORS.InternalError, 'Failed to initialize browser session');
             }
 
             const currentPage = page;
 
+            // Validate request arguments
+            if (!request.params.arguments || typeof request.params.arguments !== 'object') {
+                throw new McpError(MCP_ERRORS.InvalidParams, 'Invalid or missing arguments');
+            }
+
             switch (request.params.name) {
                 case "search_google": {
-                    if (!request.params.arguments || typeof request.params.arguments !== 'object') {
-                        return createErrorResponse(new McpError(MCP_ERRORS.InvalidParams, 'Invalid arguments'));
-                    }
-
                     const args = request.params.arguments as Record<string, unknown>;
                     if (!args.query || typeof args.query !== 'string') {
-                        return createErrorResponse(new McpError(MCP_ERRORS.InvalidParams, 'Query parameter must be a string'));
+                        throw new McpError(MCP_ERRORS.InvalidParams, 'Query parameter must be a string');
                     }
 
                     const query = args.query;
@@ -232,18 +245,18 @@ export function registerToolHandlers(server: Server): void {
                 }
 
                 case "visit_page": {
-                    if (!request.params.arguments || typeof request.params.arguments !== 'object') {
-                        return createErrorResponse(new McpError(MCP_ERRORS.InvalidParams, 'Invalid arguments'));
-                    }
-
                     const args = request.params.arguments as Record<string, unknown>;
                     if (!args.url || typeof args.url !== 'string') {
-                        return createErrorResponse(new McpError(MCP_ERRORS.InvalidParams, 'URL parameter must be a string'));
+                        throw new McpError(MCP_ERRORS.InvalidParams, 'URL parameter must be a string');
                     }
 
                     const takeScreenshot = typeof args.takeScreenshot === 'boolean' ? args.takeScreenshot : false;
 
                     try {
+                        if (currentPage.isClosed()) {
+                            throw new McpError(MCP_ERRORS.InternalError, 'Browser session has been closed');
+                        }
+
                         const result = await withRetry(
                             () => withTimeout(async () => {
                                 if (currentPage.isClosed()) {
@@ -323,54 +336,59 @@ export function registerToolHandlers(server: Server): void {
                 }
 
                 case "take_screenshot": {
-                    try {
-                        const result = await withTimeout(async () => {
-                            if (currentPage.isClosed()) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
-                            }
-
-                            const screenshot = await takeScreenshotWithSizeLimit(currentPage);
-                            const pageUrl = await currentPage.url();
-                            const pageTitle = await currentPage.title();
-                            const screenshotPath = await saveScreenshot(screenshot, pageTitle || 'untitled');
-
-                            let sessionId = getCurrentSession()?.id;
-                            if (!sessionId) {
-                                sessionId = createSession('Screenshot Session');
-                            }
-
-                            const result: ResearchResult = {
-                                url: pageUrl,
-                                title: pageTitle || "Untitled Page",
-                                content: "Screenshot taken",
-                                timestamp: new Date().toISOString(),
-                                screenshotPath
-                            };
-
-                            addResult(sessionId, result);
-
-                            const resultIndex = getCurrentSession()?.results.length ?? 0;
-                            return `research://screenshots/${resultIndex}`;
-                        }, 5000);
-
-                        return createSuccessResponse(
-                            `Screenshot taken successfully. You can view it via *MCP Resources* (Paperclip icon) @ URI: ${result}`
-                        );
-                    } catch (error) {
-                        return createErrorResponse(error);
+                    if (currentPage.isClosed()) {
+                        throw new McpError(MCP_ERRORS.InternalError, 'No active browser session');
                     }
+
+                    const result = await withTimeout(async () => {
+                        const screenshot = await takeScreenshotWithSizeLimit(currentPage);
+                        const pageUrl = await currentPage.url();
+                        const pageTitle = await currentPage.title();
+                        const screenshotPath = await saveScreenshot(screenshot, pageTitle || 'untitled');
+
+                        let sessionId = getCurrentSession()?.id;
+                        if (!sessionId) {
+                            sessionId = createSession('Screenshot Session');
+                        }
+
+                        const result: ResearchResult = {
+                            url: pageUrl,
+                            title: pageTitle || "Untitled Page",
+                            content: "Screenshot taken",
+                            timestamp: new Date().toISOString(),
+                            screenshotPath
+                        };
+
+                        addResult(sessionId, result);
+
+                        const resultIndex = getCurrentSession()?.results.length ?? 0;
+                        return `research://screenshots/${resultIndex}`;
+                    }, 5000).catch(error => {
+                        throw new McpError(MCP_ERRORS.InternalError, `Screenshot failed: ${error.message}`);
+                    });
+
+                    return createSuccessResponse(
+                        `Screenshot taken successfully. You can view it via *MCP Resources* (Paperclip icon) @ URI: ${result}`,
+                        { uri: result }
+                    );
                 }
 
                 case "close_browser": {
-                    try {
-                        if (page) {
-                            await cleanupPage(page);
-                            return createSuccessResponse("Browser session closed successfully");
-                        }
+                    if (!page) {
                         return createSuccessResponse("No active browser session to close");
-                    } catch (error) {
-                        return createErrorResponse(error);
                     }
+
+                    if (page.isClosed()) {
+                        return createSuccessResponse("Browser session already closed");
+                    }
+
+                    await cleanupPage(page).catch(error => {
+                        throw new McpError(MCP_ERRORS.InternalError, `Failed to close browser: ${error.message}`);
+                    });
+
+                    return createSuccessResponse("Browser session closed successfully", {
+                        timestamp: new Date().toISOString()
+                    });
                 }
 
                 default:
