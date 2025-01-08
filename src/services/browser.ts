@@ -32,19 +32,6 @@ interface CircuitBreaker {
     lastSuccess: number;
 }
 
-interface PageValidation {
-    wordCount: number;
-    botProtection: boolean;
-    suspiciousTitle: boolean;
-    title: string;
-    hasErrorContent: boolean;
-    performanceMetrics: {
-        loadTime: number;
-        resourceCount: number;
-        memoryUsage: number;
-    };
-}
-
 class BrowserPool {
     private static instance: BrowserPool;
     private pool: BrowserInstance[] = [];
@@ -509,11 +496,14 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
 
                 const response = await withTimeout(
                     () => page.goto(url, {
-                        waitUntil: 'domcontentloaded',
+                        waitUntil: 'networkidle',
                         timeout: BROWSER_CONFIG.navigationTimeout
                     }),
                     BROWSER_CONFIG.navigationTimeout
                 );
+
+                // Add a small delay to allow for dynamic content
+                await page.waitForTimeout(2000);
 
                 if (!response) {
                     throw new Error('Navigation failed: no response received');
@@ -523,21 +513,31 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                     throw new Error(`HTTP ${response.status()}: ${response.statusText()}`);
                 }
 
-                // Use withTimeout for network idle
-                await withTimeout(
-                    () => page.waitForLoadState('networkidle'),
-                    BROWSER_CONFIG.networkIdleTimeout
-                ).catch(() => {
-                    logger.warn('Network idle timeout reached, proceeding with validation');
-                });
-
                 if (page.isClosed()) {
                     throw new Error('Page was closed during network idle wait');
                 }
 
-                const validation = await validatePage(page);
-                if (!validation.isValid) {
+                // Add delay to allow dynamic content to settle
+                await page.waitForTimeout(2000);
+
+                // Perform multiple validation attempts
+                let validation;
+                for (let i = 0; i < 3; i++) {
+                    validation = await validatePage(page);
+                    if (validation.isValid) {
+                        break;
+                    }
+                    // If not valid but not explicitly bot protection, wait and retry
+                    if (!validation.error?.includes('Bot protection')) {
+                        await page.waitForTimeout(1000);
+                        continue;
+                    }
+                    // If bot protection detected, fail immediately
                     throw new Error(validation.error);
+                }
+
+                if (!validation?.isValid) {
+                    throw new Error(validation?.error || 'Page validation failed');
                 }
 
                 const finalUrl = page.url();
@@ -581,153 +581,112 @@ async function validatePage(page: Page): Promise<ValidationResult> {
     }
 
     try {
-        const validation = await page.evaluate((): PageValidation => {
-            // Enhanced bot protection detection
+        // First check: Basic static elements
+        const staticCheck = await page.evaluate(() => {
             const botProtectionPatterns = {
                 selectors: [
                     '#challenge-running', '#cf-challenge-running', '#px-captcha',
                     '#ddos-protection', '#waf-challenge-html', '.ray-id',
                     '#captcha-box', '.g-recaptcha', '#h-captcha',
-                    '.turnstile-wrapper', '[class*="captcha"]', '[id*="captcha"]',
-                    'iframe[src*="captcha"]', 'iframe[src*="challenge"]',
-                    '[class*="challenge"]', '[id*="challenge"]',
-                    '[class*="bot"]', '[id*="bot"]', '[class*="security"]',
-                    '[id*="security"]', '#px-captcha', '#captcha-container'
+                    '.turnstile-wrapper', '[class*="captcha"]', '[id*="captcha"]'
                 ],
                 scripts: [
                     'hcaptcha', 'recaptcha', 'turnstile', 'cloudflare',
-                    'perimeterx', 'datadome', 'imperva', 'akamai',
-                    'botdetect', 'kasada'
-                ],
-                iframes: [
-                    'captcha', 'challenge', 'security', 'protection',
-                    'verify', 'check', 'bot', 'human'
+                    'perimeterx', 'datadome', 'imperva', 'akamai'
                 ]
             };
 
-            // Check for bot protection elements
-            const botProtectionExists = (
-                // Check selectors
+            // Check for obvious bot protection
+            const hasProtection =
                 botProtectionPatterns.selectors.some(selector => document.querySelector(selector)) ||
-                // Check scripts
                 botProtectionPatterns.scripts.some(script => {
                     const scripts = Array.from(document.getElementsByTagName('script'));
-                    return scripts.some(s =>
-                        (s.src && s.src.toLowerCase().includes(script)) ||
-                        (s.textContent && s.textContent.toLowerCase().includes(script))
-                    );
-                }) ||
-                // Check iframes
-                botProtectionPatterns.iframes.some(frame => {
-                    const iframes = Array.from(document.getElementsByTagName('iframe'));
-                    return iframes.some(iframe =>
-                        iframe.src && iframe.src.toLowerCase().includes(frame)
-                    );
-                }) ||
-                // Check for suspicious DOM mutations
-                (() => {
-                    let suspiciousMutations = false;
-                    const observer = new MutationObserver(() => {
-                        suspiciousMutations = true;
-                    });
-                    observer.observe(document.body, {
-                        childList: true,
-                        subtree: true,
-                        attributes: true
-                    });
-                    setTimeout(() => observer.disconnect(), 100);
-                    return suspiciousMutations;
-                })()
-            );
-
-            const suspiciousTitlePhrases = [
-                'security check',
-                'ddos protection',
-                'please wait',
-                'just a moment',
-                'attention required',
-                'access denied',
-                'verify human',
-                'bot protection',
-                'captcha required',
-                'verification required',
-                'checking your browser',
-                'javascript required',
-                'cookies required'
-            ];
-
-            const title = document.title.toLowerCase();
-            const suspiciousTitle = suspiciousTitlePhrases.some(phrase =>
-                title.includes(phrase)
-            );
-
-            const bodyText = document.body.innerText || '';
-            const words = bodyText.trim().split(/\s+/).length;
-
-            const errorIndicators = [
-                '404 not found',
-                'page not found',
-                'access denied',
-                'forbidden',
-                'error occurred',
-                'service unavailable'
-            ];
-
-            const hasErrorContent = errorIndicators.some(indicator =>
-                bodyText.toLowerCase().includes(indicator)
-            );
-
-            const performanceMetrics = {
-                loadTime: performance.now(),
-                resourceCount: performance.getEntriesByType('resource').length,
-                memoryUsage: (performance as any).memory?.usedJSHeapSize || 0
-            };
+                    return scripts.some(s => s.src && s.src.toLowerCase().includes(script));
+                });
 
             return {
-                wordCount: words,
-                botProtection: botProtectionExists,
-                suspiciousTitle,
-                title: document.title,
-                hasErrorContent,
-                performanceMetrics
+                hasProtection,
+                title: document.title.toLowerCase(),
+                content: document.body.innerText || ''
             };
         });
 
-        if (validation.botProtection) {
+        // If obvious bot protection is found, fail fast
+        if (staticCheck.hasProtection) {
             return {
                 isValid: false,
                 error: 'Bot protection or CAPTCHA detected'
             };
         }
 
-        if (validation.suspiciousTitle) {
+        // Second check: Monitor for dynamic changes
+        const dynamicCheck = await page.evaluate(async () => {
+            let suspiciousChanges = 0;
+            
+            // Wait and observe DOM changes
+            await new Promise<void>(resolve => {
+                const observer = new MutationObserver(mutations => {
+                    for (const mutation of mutations) {
+                        // Only count significant changes
+                        if (mutation.type === 'childList' &&
+                            (mutation.addedNodes.length > 2 || mutation.removedNodes.length > 2)) {
+                            suspiciousChanges++;
+                        }
+                    }
+                });
+
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true
+                });
+
+                // Observe for a short period
+                setTimeout(() => {
+                    observer.disconnect();
+                    resolve();
+                }, 1500);
+            });
+
+            return { suspiciousChanges };
+        });
+
+        // Check for suspicious patterns
+        const suspiciousPhrases = [
+            'security check', 'ddos protection', 'please wait',
+            'just a moment', 'attention required', 'access denied',
+            'verify human', 'bot protection', 'captcha required'
+        ];
+
+        const hasSuspiciousTitle = suspiciousPhrases.some(phrase =>
+            staticCheck.title.includes(phrase)
+        );
+
+        if (hasSuspiciousTitle) {
             return {
                 isValid: false,
-                error: `Suspicious page title detected: "${validation.title}"`
+                error: 'Suspicious page title detected'
             };
         }
 
-        if (validation.wordCount < BROWSER_CONFIG.minContentWords) {
+        // Check content
+        const words = staticCheck.content.trim().split(/\s+/).length;
+        if (words < BROWSER_CONFIG.minContentWords) {
             return {
                 isValid: false,
-                error: `Page contains insufficient content (${validation.wordCount} words)`
+                error: `Insufficient content (${words} words)`
             };
         }
 
-        if (validation.hasErrorContent) {
+        // Check for excessive dynamic changes
+        if (dynamicCheck.suspiciousChanges > 5) {
             return {
                 isValid: false,
-                error: 'Page contains error messages or unavailable content'
+                error: 'Suspicious page behavior detected'
             };
         }
 
-        if (validation.performanceMetrics.loadTime > PERFORMANCE_CONFIG.criticalRequestThreshold) {
-            return {
-                isValid: false,
-                error: 'Page load time exceeded critical threshold'
-            };
-        }
-
+        // Final URL check
         const url = page.url();
         if (url.includes('data:') || url.includes('javascript:')) {
             return {
