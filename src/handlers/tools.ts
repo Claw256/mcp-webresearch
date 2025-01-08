@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ToolHandlerResponse, SearchResult, ResearchResult } from "../types/index.js";
-import { Page } from 'playwright';
+import { Page } from 'patchright';
 import { ensureBrowser, dismissGoogleConsent, safePageNavigation, cleanupPage } from "../services/browser.js";
 import { takeScreenshotWithSizeLimit, saveScreenshot } from "../services/screenshot.js";
 import { extractContentAsMarkdown } from "../services/content.js";

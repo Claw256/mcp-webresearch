@@ -32,7 +32,7 @@
   "devDependencies": {
     "@types/node": "22.10.5",
     "@types/turndown": "^5.0.4",
-    "playwright": "^1.49.1",
+    "playwright": "^1.40.1",
     "rimraf": "6.0.1",
     "tsc-watch": "^6.0.4",
     "typescript": "^5.3.3"

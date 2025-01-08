@@ -1,4 +1,4 @@
-import { Page } from 'playwright';
+import { Page } from 'patchright';
 import TurndownService from 'turndown';
 import { Logger } from '../utils/logger.js';
 

@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { Page } from 'playwright';
+import { Page } from 'patchright';
 import { SERVER_CONFIG } from '../config/index.js';
 import { Logger } from '../utils/logger.js';
 
