@@ -8,6 +8,7 @@ import {
     PERFORMANCE_CONFIG
 } from '../config/index.js';
 import { Logger } from '../utils/logger.js';
+import { withTimeout } from "../utils/index.js";
 
 interface ValidationResult {
     isValid: boolean;
@@ -114,7 +115,6 @@ class BrowserPool {
             context.setDefaultTimeout(BROWSER_CONFIG.navigationTimeout);
             context.setDefaultNavigationTimeout(BROWSER_CONFIG.navigationTimeout);
 
-            // Configure request handling
             await context.route('**/*', async (route) => {
                 const request = route.request();
                 const resourceType = request.resourceType();
@@ -123,17 +123,10 @@ class BrowserPool {
                     return route.abort();
                 }
 
-                const timeout = setTimeout(() => {
-                    route.abort('timedout');
-                }, BROWSER_CONFIG.resourceTimeout);
-
-                try {
-                    await route.continue();
-                } catch (error) {
-                    this.logger.error('Resource request failed:', error);
-                } finally {
-                    clearTimeout(timeout);
-                }
+                await withTimeout(
+                    () => route.continue(),
+                    BROWSER_CONFIG.resourceTimeout
+                ).catch(() => route.abort('timedout'));
             });
 
             const page = await context.newPage();
@@ -232,19 +225,14 @@ class BrowserPool {
                 throw new Error('Request queue is full');
             }
 
-            const page = await new Promise<Page>((resolve, reject) => {
-                const queueEntry = { resolve, reject, timestamp: Date.now() };
-                this.requestQueue.push(queueEntry);
-                this.processQueue();
-
-                setTimeout(() => {
-                    const index = this.requestQueue.indexOf(queueEntry);
-                    if (index !== -1) {
-                        this.requestQueue.splice(index, 1);
-                        reject(new Error('Request queue timeout'));
-                    }
-                }, PERFORMANCE_CONFIG.queueTimeoutMs);
-            });
+            const page = await withTimeout(
+                () => new Promise<Page>((resolve, reject) => {
+                    const queueEntry = { resolve, reject, timestamp: Date.now() };
+                    this.requestQueue.push(queueEntry);
+                    this.processQueue();
+                }),
+                PERFORMANCE_CONFIG.queueTimeoutMs
+            );
 
             await this.updateCircuitBreaker(true);
             return page;
@@ -360,12 +348,10 @@ class BrowserPool {
 
     async cleanup(): Promise<void> {
         try {
-            // Clear all intervals
             if (this.maintenanceInterval) clearInterval(this.maintenanceInterval);
             if (this.circuitBreakerInterval) clearInterval(this.circuitBreakerInterval);
             if (this.performanceInterval) clearInterval(this.performanceInterval);
 
-            // Cleanup all instances
             await Promise.all(this.pool.map(instance => this.cleanupInstance(instance)));
             this.pool = [];
         } catch (error) {
@@ -452,10 +438,13 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                     throw new Error('Page was closed during navigation');
                 }
 
-                const response = await page.goto(url, {
-                    waitUntil: 'domcontentloaded',
-                    timeout: BROWSER_CONFIG.navigationTimeout
-                });
+                const response = await withTimeout(
+                    () => page.goto(url, {
+                        waitUntil: 'domcontentloaded',
+                        timeout: BROWSER_CONFIG.navigationTimeout
+                    }),
+                    BROWSER_CONFIG.navigationTimeout
+                );
 
                 if (!response) {
                     throw new Error('Navigation failed: no response received');
@@ -465,19 +454,13 @@ export async function safePageNavigation(page: Page, url: string): Promise<void>
                     throw new Error(`HTTP ${response.status()}: ${response.statusText()}`);
                 }
 
-                const networkIdlePromise = page.waitForLoadState('networkidle', {
-                    timeout: BROWSER_CONFIG.networkIdleTimeout
-                }).catch(() => 'timeout');
-
-                const timeoutPromise = new Promise(resolve =>
-                    setTimeout(() => resolve('timeout'), BROWSER_CONFIG.networkIdleTimeout)
-                );
-
-                const networkResult = await Promise.race([networkIdlePromise, timeoutPromise]);
-                
-                if (networkResult === 'timeout') {
+                // Use withTimeout for network idle
+                await withTimeout(
+                    () => page.waitForLoadState('networkidle'),
+                    BROWSER_CONFIG.networkIdleTimeout
+                ).catch(() => {
                     logger.warn('Network idle timeout reached, proceeding with validation');
-                }
+                });
 
                 if (page.isClosed()) {
                     throw new Error('Page was closed during network idle wait');
@@ -662,84 +645,63 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
             return;
         }
 
-        const currentUrl = page.url();
-        if (!CONSENT_REGIONS.some(domain => currentUrl.includes(domain))) {
-            return;
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        const consentSelectors = [
-            'div[role="dialog"][aria-modal="true"]',
-            'div.HTjtHe[role="dialog"]',
-            'div.KxvlWc',
-            'button[class*="tHlp8d"]',
-            'div[aria-label*="Before you continue to Google Search"]',
-            'form:has(button[class*="tHlp8d"])',
-            'div[aria-modal="true"]:has(button:has-text("Accept all"))'
-        ];
-
-        for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-                if (page.isClosed()) {
-                    return;
-                }
-
-                const hasConsent = await page.$(consentSelectors.join(', ')).then(Boolean);
-                if (!hasConsent) {
-                    return;
-                }
-
-                await Promise.any([
-                    page.click('button[class*="tHlp8d"]').catch(() => null),
-                    page.click('div[role="dialog"] button[class*="tHlp8d"]').catch(() => null),
-                    page.click('div[class*="QS5gu"] button').catch(() => null),
-                    page.click('button:has-text("Accept all")[class*="tHlp8d"]').catch(() => null),
-                    page.evaluate(() => {
-                        const acceptButton = document.querySelector('button[class*="tHlp8d"]');
-                        if (acceptButton) {
-                            (acceptButton as HTMLElement).click();
-                            return true;
-                        }
-                        return false;
-                    }).catch(() => null),
-                    page.click('div[role="dialog"] button:has-text("Accept all")').catch(() => null),
-                    page.click('button:has-text("Accept all")').catch(() => null)
-                ]).catch(() => {
-                    logger.warn('Failed to click consent button, retrying...');
-                });
-
-                if (page.isClosed()) {
-                    return;
-                }
-
-                await page.waitForFunction(() => {
-                    return !document.querySelector('div[role="dialog"]');
-                }, { timeout: 3000 }).catch(() => {
-                    logger.warn('Dialog did not disappear after clicking accept');
-                });
-
-                await new Promise(resolve => setTimeout(resolve, 500));
-
-                if (page.isClosed()) {
-                    return;
-                }
-
-                const consentStillPresent = await page.$(consentSelectors.join(', ')).then(Boolean);
-                if (!consentStillPresent) {
-                    break;
-                }
-
-                if (attempt < 1) {
-                    logger.warn(`Consent still present after attempt ${attempt + 1}, retrying...`);
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
-            } catch (error) {
-                logger.warn(`Consent dismissal attempt ${attempt + 1} failed:`, error);
-                if (attempt < 1) {
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
+        // Pre-emptively set consent cookies
+        await page.context().addCookies([
+            {
+                name: 'CONSENT',
+                value: 'YES+cb.20240107-11-p0.en+FX',
+                domain: '.google.com',
+                path: '/'
+            },
+            {
+                name: 'SOCS',
+                value: 'CAESEwgDEgk0NzI4MDg4NDIYC_qMAQ',
+                domain: '.google.com',
+                path: '/'
             }
+        ]);
+
+        // Immediately inject consent handling script
+        await page.evaluate(() => {
+            window.addEventListener('DOMContentLoaded', () => {
+                const observer = new MutationObserver(() => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const acceptButton = buttons.find(button =>
+                        button.textContent?.toLowerCase().includes('accept all') ||
+                        button.className.includes('tHlp8d')
+                    );
+                    if (acceptButton) {
+                        (acceptButton as HTMLElement).click();
+                        observer.disconnect();
+                    }
+                });
+                
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            });
+        });
+
+        // Quick check for existing dialog
+        const hasConsent = await page.$('div[role="dialog"]').then(Boolean);
+        if (hasConsent) {
+            await withTimeout(async () => {
+                // Try direct click first
+                await page.click([
+                    'button[class*="tHlp8d"]',
+                    'button:has-text("Accept all")',
+                    'div[role="dialog"] button:has-text("Accept all")'
+                ].join(', ')).catch(() => null);
+
+                // Wait briefly for dialog to disappear
+                await page.waitForFunction(
+                    () => !document.querySelector('div[role="dialog"]'),
+                    { timeout: 1000 }
+                );
+            }, 2000).catch(() => {
+                logger.warn('Initial consent dismissal failed, continuing with navigation');
+            });
         }
     } catch (error) {
         logger.error('Consent handling failed:', error);
