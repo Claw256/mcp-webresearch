@@ -71,7 +71,14 @@ class BrowserPool {
                 ignoreHTTPSErrors: true,
                 bypassCSP: true,
                 args: [
-                    `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`
+                    `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`,
+                    // Add API keys to prevent warnings
+                    '--use-fake-ui-for-media-stream',
+                    '--use-fake-device-for-media-stream',
+                    '--disable-blink-features=AutomationControlled',
+                    // Enable sandbox for better stability
+                    '--enable-sandbox',
+                    '--disable-setuid-sandbox'
                 ]
             }).catch(async (error) => {
                 if (error.message.includes("Chromium distribution 'chrome' is not found")) {
@@ -82,7 +89,14 @@ class BrowserPool {
                         ignoreHTTPSErrors: true,
                         bypassCSP: true,
                         args: [
-                            `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`
+                            `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`,
+                            // Add API keys to prevent warnings
+                            '--use-fake-ui-for-media-stream',
+                            '--use-fake-device-for-media-stream',
+                            '--disable-blink-features=AutomationControlled',
+                            // Enable sandbox for better stability
+                            '--enable-sandbox',
+                            '--disable-setuid-sandbox'
                         ]
                     });
                 }
