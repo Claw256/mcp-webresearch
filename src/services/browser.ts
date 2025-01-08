@@ -9,6 +9,7 @@ import {
 } from '../config/index.js';
 import { Logger } from '../utils/logger.js';
 import { withTimeout } from "../utils/index.js";
+import { applyStealth, evasivePage } from '../utils/stealth.js';
 
 interface ValidationResult {
     isValid: boolean;
@@ -79,38 +80,103 @@ class BrowserPool {
             const browser = await chromium.launch({
                 headless: true,
                 args: [
-                    '--disable-dev-shm-usage',
+                    // Basic configuration
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
+                    
+                    // Performance optimizations
+                    '--disable-dev-shm-usage',
                     '--disable-gpu',
                     '--disable-software-rasterizer',
                     `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`,
-                    '--disable-extensions',
+                    
+                    // Automation flags
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-features=IsolateOrigins,site-per-process,TranslateUI,BlinkGenPropertyTrees',
+                    
+                    // Privacy and fingerprinting
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-site-isolation-trials',
+                    '--disable-features=AudioServiceOutOfProcess',
+                    '--disable-remote-fonts',
+                    '--disable-webgl',
+                    '--disable-threaded-scrolling',
+                    '--disable-webgl2',
+                    '--disable-notifications',
+                    '--disable-webrtc-hw-encoding',
+                    '--disable-webrtc-hw-decoding',
+                    
+                    // Additional stealth settings
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--no-zygote',
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-canvas-aa',
+                    '--disable-2d-canvas-clip-aa',
+                    '--disable-gl-drawing-for-tests',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-mjpeg-decode',
+                    '--disable-accelerated-video-decode',
+                    '--disable-infobars',
+                    '--ignore-certificate-errors',
+                    '--ignore-certificate-errors-spki-list',
+                    '--ignore-ssl-errors',
+                    '--start-maximized',
                     '--disable-background-networking',
                     '--disable-background-timer-throttling',
                     '--disable-backgrounding-occluded-windows',
                     '--disable-breakpad',
                     '--disable-component-extensions-with-background-pages',
-                    '--disable-features=TranslateUI,BlinkGenPropertyTrees',
                     '--disable-ipc-flooding-protection',
                     '--disable-renderer-backgrounding',
                     '--enable-features=NetworkService,NetworkServiceInProcess',
                     '--force-color-profile=srgb',
                     '--metrics-recording-only',
-                    '--mute-audio'
+                    '--mute-audio',
+                    
+                    // Hardware fingerprint randomization
+                    '--use-fake-device-for-media-stream',
+                    '--use-fake-ui-for-media-stream',
+                    
+                    // Additional privacy features
+                    '--deny-permission-prompts',
+                    '--disable-sync',
+                    '--disable-domain-reliability',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-component-update',
+                    '--disable-default-apps',
+                    '--disable-dinosaur-easter-egg',
+                    '--disable-popup-blocking',
+                    '--disable-prompt-on-repost',
+                    '--disable-hang-monitor',
+                    '--disable-session-crashed-bubble',
+                    '--disable-bundled-ppapi-flash',
+                    '--disable-gaia-services',
+                    
+                    // Font rendering
+                    '--font-render-hinting=none',
+                    '--disable-font-subpixel-positioning',
+                    '--disable-lcd-text'
                 ]
             });
 
             const context = await browser.newContext({
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport: { width: 1280, height: 800 },
                 ignoreHTTPSErrors: true,
                 javaScriptEnabled: true,
                 bypassCSP: true,
-                extraHTTPHeaders: {
-                    'Accept-Language': 'en-US,en;q=0.9'
-                }
+                locale: 'en-US',
+                timezoneId: 'America/New_York',
+                permissions: ['geolocation'],
+                colorScheme: 'light',
+                deviceScaleFactor: 1,
+                hasTouch: false,
+                isMobile: false,
+                forcedColors: 'none'
             });
+
+            // Apply stealth mode
+            await applyStealth(context);
 
             context.setDefaultTimeout(BROWSER_CONFIG.navigationTimeout);
             context.setDefaultNavigationTimeout(BROWSER_CONFIG.navigationTimeout);
@@ -130,6 +196,9 @@ class BrowserPool {
             });
 
             const page = await context.newPage();
+
+            // Apply evasive behaviors
+            await evasivePage(page);
 
             page.on('pageerror', (error) => {
                 this.logger.error('Page error:', error);
@@ -513,23 +582,62 @@ async function validatePage(page: Page): Promise<ValidationResult> {
 
     try {
         const validation = await page.evaluate((): PageValidation => {
-            const botProtectionSelectors = [
-                '#challenge-running',
-                '#cf-challenge-running',
-                '#px-captcha',
-                '#ddos-protection',
-                '#waf-challenge-html',
-                '.ray-id',
-                '#captcha-box',
-                '.g-recaptcha',
-                '#h-captcha',
-                '.turnstile-wrapper',
-                '[class*="captcha"]',
-                '[id*="captcha"]'
-            ];
+            // Enhanced bot protection detection
+            const botProtectionPatterns = {
+                selectors: [
+                    '#challenge-running', '#cf-challenge-running', '#px-captcha',
+                    '#ddos-protection', '#waf-challenge-html', '.ray-id',
+                    '#captcha-box', '.g-recaptcha', '#h-captcha',
+                    '.turnstile-wrapper', '[class*="captcha"]', '[id*="captcha"]',
+                    'iframe[src*="captcha"]', 'iframe[src*="challenge"]',
+                    '[class*="challenge"]', '[id*="challenge"]',
+                    '[class*="bot"]', '[id*="bot"]', '[class*="security"]',
+                    '[id*="security"]', '#px-captcha', '#captcha-container'
+                ],
+                scripts: [
+                    'hcaptcha', 'recaptcha', 'turnstile', 'cloudflare',
+                    'perimeterx', 'datadome', 'imperva', 'akamai',
+                    'botdetect', 'kasada'
+                ],
+                iframes: [
+                    'captcha', 'challenge', 'security', 'protection',
+                    'verify', 'check', 'bot', 'human'
+                ]
+            };
 
-            const botProtectionExists = botProtectionSelectors.some(selector =>
-                document.querySelector(selector)
+            // Check for bot protection elements
+            const botProtectionExists = (
+                // Check selectors
+                botProtectionPatterns.selectors.some(selector => document.querySelector(selector)) ||
+                // Check scripts
+                botProtectionPatterns.scripts.some(script => {
+                    const scripts = Array.from(document.getElementsByTagName('script'));
+                    return scripts.some(s =>
+                        (s.src && s.src.toLowerCase().includes(script)) ||
+                        (s.textContent && s.textContent.toLowerCase().includes(script))
+                    );
+                }) ||
+                // Check iframes
+                botProtectionPatterns.iframes.some(frame => {
+                    const iframes = Array.from(document.getElementsByTagName('iframe'));
+                    return iframes.some(iframe =>
+                        iframe.src && iframe.src.toLowerCase().includes(frame)
+                    );
+                }) ||
+                // Check for suspicious DOM mutations
+                (() => {
+                    let suspiciousMutations = false;
+                    const observer = new MutationObserver(() => {
+                        suspiciousMutations = true;
+                    });
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true
+                    });
+                    setTimeout(() => observer.disconnect(), 100);
+                    return suspiciousMutations;
+                })()
             );
 
             const suspiciousTitlePhrases = [
