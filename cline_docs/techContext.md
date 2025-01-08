@@ -20,6 +20,7 @@
    - Non-headless mode for undetectability
    - Simplified context settings
    - Patchright's recommended configuration
+   - Fallback to default Chromium if Chrome not found
 
 2. Timeout Constraints:
    - Navigation timeout: 10s

@@ -24,6 +24,8 @@ Previous work on timeout issues:
 - Configured non-headless mode for better undetectability
 - Simplified browser context settings per patchright recommendations
 - Removed potentially detectable browser options
+- Added fallback to default Chromium if Chrome not found
+- Improved browser launch error handling
 
 ### 2. Core Timeout Handling
 - Added proper timeout cleanup to prevent memory leaks

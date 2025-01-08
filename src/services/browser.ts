@@ -66,13 +66,25 @@ class BrowserPool {
             // Use patchright's undetected mode with recommended settings
             // Use patchright's recommended undetected configuration
             const browser = await chromium.launch({
-                channel: 'chrome',
                 headless: false, // patchright recommends headless: false for undetectability
                 args: [
                     '--no-sandbox',
                     '--disable-dev-shm-usage',
                     `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`
                 ]
+            }).catch(async (error) => {
+                if (error.message.includes("Chromium distribution 'chrome' is not found")) {
+                    // Try without chrome channel
+                    return await chromium.launch({
+                        headless: false,
+                        args: [
+                            '--no-sandbox',
+                            '--disable-dev-shm-usage',
+                            `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`
+                        ]
+                    });
+                }
+                throw error;
             });
 
             // Use patchright's recommended context settings for undetectability
