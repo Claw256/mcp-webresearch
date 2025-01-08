@@ -679,14 +679,40 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
         await page.evaluate(() => {
             window.addEventListener('DOMContentLoaded', () => {
                 const observer = new MutationObserver(() => {
-                    const buttons = Array.from(document.querySelectorAll('button'));
-                    const acceptButton = buttons.find(button =>
-                        button.textContent?.toLowerCase().includes('accept all') ||
-                        button.className.includes('tHlp8d')
-                    );
-                    if (acceptButton) {
-                        (acceptButton as HTMLElement).click();
-                        observer.disconnect();
+                    // Try to find the accept button using various selectors
+                    const selectors = [
+                        // Form-specific buttons
+                        'form[action*="consent"] button',
+                        'form button[role="button"]',
+                        // Class-specific buttons
+                        'button[class*="tHlp8d"]',
+                        'button[class*="VfPpkd-LgbsSe"]',
+                        // Role-specific buttons
+                        'button[role="button"]',
+                        'div[role="button"]'
+                    ];
+
+                    for (const selector of selectors) {
+                        const elements = Array.from(document.querySelectorAll(selector));
+                        const acceptButton = elements.find(el => {
+                            const text = el.textContent?.toLowerCase() || '';
+                            const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+                            return (
+                                text.includes('accept all') ||
+                                text.includes('i agree') ||
+                                text.includes('agree to all') ||
+                                ariaLabel.includes('accept all') ||
+                                ariaLabel.includes('i agree') ||
+                                ariaLabel.includes('agree to all') ||
+                                (selector.includes('tHlp8d') && el.className.includes('tHlp8d'))
+                            );
+                        });
+
+                        if (acceptButton) {
+                            (acceptButton as HTMLElement).click();
+                            observer.disconnect();
+                            return;
+                        }
                     }
                 });
                 
@@ -701,11 +727,18 @@ export async function dismissGoogleConsent(page: Page): Promise<void> {
         const hasConsent = await page.$('div[role="dialog"]').then(Boolean);
         if (hasConsent) {
             await withTimeout(async () => {
-                // Try direct click first
+                // Try direct click with more specific selectors
                 await page.click([
+                    // Primary button selectors
+                    'form[action*="consent"] button:has-text("Accept all")',
+                    'form button[role="button"]:has-text("Accept all")',
+                    // Specific Google consent button classes
                     'button[class*="tHlp8d"]',
-                    'button:has-text("Accept all")',
-                    'div[role="dialog"] button:has-text("Accept all")'
+                    'button[class*="VfPpkd-LgbsSe"]',
+                    // Fallback selectors
+                    'div[role="dialog"] button[role="button"]:has-text("Accept all")',
+                    'div[role="dialog"] button:has-text("I agree")',
+                    'button:has-text("Agree to all")'
                 ].join(', ')).catch(() => null);
 
                 // Wait briefly for dialog to disappear
