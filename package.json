@@ -14,7 +14,8 @@
     "clean": "rimraf build",
     "prebuild": "npm run clean",
     "postbuild": "node -e \"import('fs').then(fs => fs.promises.chmod('build/index.js', 0o755)).catch(() => {});\"",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "postinstall": "npx patchright install chromium"
   },
   "keywords": [
     "mcp",

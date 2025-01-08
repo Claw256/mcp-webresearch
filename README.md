@@ -138,14 +138,15 @@ npm run clean
 ### Development Requirements
 
 - Node.js >= 18
-- Playwright (automatically installed as a dependency)
+- Chromium browser (automatically installed during package installation via patchright)
+- Patchright (automatically installed as a dependency)
 - TypeScript 5.3+
 - MCP SDK 1.1.0+
 
 ### Key Dependencies
 
 - `@modelcontextprotocol/sdk`: ^1.1.0 - MCP server implementation
-- `playwright`: ^1.40.1 - Browser automation
+- `patchright`: ^1.49.2 - Undetected browser automation
 - `turndown`: ^7.1.2 - HTML to Markdown conversion
 
 ## Verified Platforms
