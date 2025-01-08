@@ -1,7 +1,13 @@
 # Active Context
 
 ## Current Work
-Addressing timeout issues in the MCP Web Research server, specifically:
+Improving bot detection and browser automation:
+1. Migrated to patchright for undetected mode
+2. Automated Chromium installation
+3. Removed custom stealth implementation
+4. Enhanced bot detection avoidance
+
+Previous work on timeout issues:
 1. Google search tool timeouts
 2. Page visit timeouts
 3. Resource cleanup issues
@@ -9,7 +15,14 @@ Addressing timeout issues in the MCP Web Research server, specifically:
 
 ## Recent Changes
 
-### 1. Core Timeout Handling
+### 1. Bot Detection Improvements
+- Migrated from playwright to patchright for better bot detection avoidance
+- Added automated Chromium installation via postinstall script
+- Removed custom stealth implementation in favor of patchright's built-in features
+- Updated type system to use patchright consistently
+- Improved documentation for browser requirements
+
+### 2. Core Timeout Handling
 - Added proper timeout cleanup to prevent memory leaks
 - Added comprehensive list of non-retryable errors
 - Implemented exponential backoff with jitter

@@ -26,7 +26,13 @@
    - ✅ Error recovery
 
 ## Recently Fixed
-1. Timeout Issues (In Progress)
+1. Bot Detection
+   - ✅ Migrated to patchright for undetected mode
+   - ✅ Removed custom stealth implementation
+   - ✅ Automated Chromium installation
+   - ✅ Improved bot detection avoidance
+
+2. Timeout Issues (In Progress)
    - ⏳ Proper timeout cleanup
    - ⏳ Non-retryable error handling
    - ⏳ Exponential backoff

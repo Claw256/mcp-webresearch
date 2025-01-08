@@ -2,7 +2,7 @@
 
 ## Technologies Used
 - TypeScript/Node.js: Core server implementation
-- Playwright: Browser automation and web interaction
+- Patchright: Undetected browser automation with Chromium
 - MCP SDK: Model Context Protocol implementation
 - Axios: HTTP client for API requests
 
