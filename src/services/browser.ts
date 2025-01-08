@@ -1,4 +1,4 @@
-import { chromium, Browser, Page, BrowserContext } from 'patchright';
+import { chromium, Page, BrowserContext } from 'patchright';
 import {
     BROWSER_CONFIG,
     CONSENT_REGIONS,
@@ -16,7 +16,6 @@ interface ValidationResult {
 }
 
 interface BrowserInstance {
-    browser: Browser;
     context: BrowserContext;
     page: Page;
     lastUsed: number;
@@ -31,6 +30,7 @@ interface CircuitBreaker {
     lastSuccess: number;
 }
 
+// Browser pool manages persistent browser contexts
 class BrowserPool {
     private static instance: BrowserPool;
     private pool: BrowserInstance[] = [];
@@ -63,35 +63,30 @@ class BrowserPool {
 
     private async createBrowserInstance(): Promise<BrowserInstance> {
         try {
-            // Use patchright's undetected mode with recommended settings
-            // Use patchright's recommended undetected configuration
-            const browser = await chromium.launch({
-                headless: false, // patchright recommends headless: false for undetectability
+            // Use patchright's recommended undetectable configuration
+            const context = await chromium.launchPersistentContext("user_data", {
+                channel: "chrome",
+                headless: false,
+                viewport: null,
+                ignoreHTTPSErrors: true,
+                bypassCSP: true,
                 args: [
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage',
                     `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`
                 ]
             }).catch(async (error) => {
                 if (error.message.includes("Chromium distribution 'chrome' is not found")) {
                     // Try without chrome channel
-                    return await chromium.launch({
+                    return await chromium.launchPersistentContext("user_data", {
                         headless: false,
+                        viewport: null,
+                        ignoreHTTPSErrors: true,
+                        bypassCSP: true,
                         args: [
-                            '--no-sandbox',
-                            '--disable-dev-shm-usage',
                             `--js-flags=--max-old-space-size=${BROWSER_CONFIG.maxMemoryMB}`
                         ]
                     });
                 }
                 throw error;
-            });
-
-            // Use patchright's recommended context settings for undetectability
-            const context = await browser.newContext({
-                viewport: null, // patchright recommends null viewport for undetectability
-                ignoreHTTPSErrors: true,
-                bypassCSP: true
             });
 
             context.setDefaultTimeout(BROWSER_CONFIG.navigationTimeout);
@@ -124,7 +119,6 @@ class BrowserPool {
             });
 
             return {
-                browser,
                 context,
                 page,
                 lastUsed: Date.now(),
@@ -296,8 +290,10 @@ class BrowserPool {
 
     private async cleanupInstance(instance: BrowserInstance): Promise<void> {
         try {
-            await instance.context.close();
-            await instance.browser.close();
+            if (!instance.page.isClosed()) {
+                await instance.page.close();
+            }
+            await instance.context.close(); // This also closes the browser since we're using persistent context
         } catch (error) {
             this.logger.error('Error during instance cleanup:', error);
         }
