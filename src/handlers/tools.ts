@@ -234,44 +234,48 @@ export function registerToolHandlers(server: Server): void {
                     const takeScreenshot = typeof args.takeScreenshot === 'boolean' ? args.takeScreenshot : false;
 
                     try {
-                        const result = await withTimeout(async () => {
-                            if (currentPage.isClosed()) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
-                            }
+                        const result = await withRetry(
+                            () => withTimeout(async () => {
+                                if (currentPage.isClosed()) {
+                                    throw new McpError(MCP_ERRORS.InternalError, 'Page was closed during operation');
+                                }
 
-                            await safePageNavigation(currentPage, args.url as string);
-                            const title = await currentPage.title();
-                            const content = await extractContentAsMarkdown(currentPage);
+                                await safePageNavigation(currentPage, args.url as string);
+                                const title = await currentPage.title();
+                                const content = await extractContentAsMarkdown(currentPage);
 
-                            if (!content) {
-                                throw new McpError(MCP_ERRORS.InternalError, 'Failed to extract content');
-                            }
+                                if (!content) {
+                                    throw new McpError(MCP_ERRORS.InternalError, 'Failed to extract content');
+                                }
 
-                            let sessionId = getCurrentSession()?.id;
-                            if (!sessionId) {
-                                sessionId = createSession(title);
-                            }
+                                let sessionId = getCurrentSession()?.id;
+                                if (!sessionId) {
+                                    sessionId = createSession(title);
+                                }
 
-                            const pageResult: ResearchResult = {
-                                url: args.url as string,
-                                title,
-                                content,
-                                timestamp: new Date().toISOString(),
-                            };
+                                const pageResult: ResearchResult = {
+                                    url: args.url as string,
+                                    title,
+                                    content,
+                                    timestamp: new Date().toISOString(),
+                                };
 
-                            let screenshotUri: string | undefined;
-                            if (takeScreenshot && !currentPage.isClosed()) {
-                                const screenshot = await takeScreenshotWithSizeLimit(currentPage);
-                                const screenshotPath = await saveScreenshot(screenshot, title);
-                                pageResult.screenshotPath = screenshotPath;
+                                let screenshotUri: string | undefined;
+                                if (takeScreenshot && !currentPage.isClosed()) {
+                                    const screenshot = await takeScreenshotWithSizeLimit(currentPage);
+                                    const screenshotPath = await saveScreenshot(screenshot, title);
+                                    pageResult.screenshotPath = screenshotPath;
 
-                                const resultIndex = getCurrentSession()?.results.length ?? 0;
-                                screenshotUri = `research://screenshots/${resultIndex}`;
-                            }
+                                    const resultIndex = getCurrentSession()?.results.length ?? 0;
+                                    screenshotUri = `research://screenshots/${resultIndex}`;
+                                }
 
-                            addResult(sessionId, pageResult);
-                            return { pageResult, screenshotUri };
-                        }, 15000);
+                                addResult(sessionId, pageResult);
+                                return { pageResult, screenshotUri };
+                            }, 30000), // Increased timeout to match search_google
+                            2, // maxRetries
+                            1000 // initial delay
+                        );
 
                         return createSuccessResponse(JSON.stringify({
                             url: result.pageResult.url,
