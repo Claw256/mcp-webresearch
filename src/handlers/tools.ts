@@ -167,6 +167,15 @@ export function registerToolHandlers(server: Server): void {
                     properties: {},
                     required: []
                 }
+            },
+            {
+                name: "close_browser",
+                description: "Close the current browser session",
+                inputSchema: {
+                    type: "object",
+                    properties: {},
+                    required: []
+                }
             }
         ]
     }));
@@ -352,6 +361,18 @@ export function registerToolHandlers(server: Server): void {
                     }
                 }
 
+                case "close_browser": {
+                    try {
+                        if (page) {
+                            await cleanupPage(page);
+                            return createSuccessResponse("Browser session closed successfully");
+                        }
+                        return createSuccessResponse("No active browser session to close");
+                    } catch (error) {
+                        return createErrorResponse(error);
+                    }
+                }
+
                 default:
                     return createErrorResponse(new McpError(
                         MCP_ERRORS.MethodNotFound,
@@ -359,13 +380,13 @@ export function registerToolHandlers(server: Server): void {
                     ));
             }
         } catch (error) {
-            return createErrorResponse(error);
-        } finally {
+            // Only cleanup page on error
             if (page) {
                 await cleanupPage(page).catch(error => {
                     logger.error('Failed to cleanup page:', error);
                 });
             }
+            return createErrorResponse(error);
         }
     });
 }
