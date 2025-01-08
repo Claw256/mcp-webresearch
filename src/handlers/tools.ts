@@ -59,7 +59,7 @@ async function performGoogleSearch(page: Page, query: string): Promise<SearchRes
             () => page.waitForSelector(
                 'input[name="q"], textarea[name="q"], input[type="text"]'
             ),
-            3000
+            5000
         ).catch(() => null);
 
         if (!searchInput) {
@@ -77,14 +77,14 @@ async function performGoogleSearch(page: Page, query: string): Promise<SearchRes
                     waitUntil: 'domcontentloaded'
                 })
             ]);
-        }, 3000).catch(() => {
+        }, 8000).catch(() => {
             throw new McpError(MCP_ERRORS.InternalError, 'Search submission failed');
         });
 
         // Wait for results with short timeout
         const resultsPresent = await withTimeout(
             () => page.waitForSelector('div.g'),
-            3000
+            8000
         ).catch(() => null);
 
         if (!resultsPresent) {
@@ -120,7 +120,7 @@ async function performGoogleSearch(page: Page, query: string): Promise<SearchRes
         }
 
         return searchResults;
-    }, 10000); // Overall timeout for the entire search operation
+    }, 30000); // Overall timeout for the entire search operation (increased to account for bot detection and delays)
 }
 
 export function registerToolHandlers(server: Server): void {
