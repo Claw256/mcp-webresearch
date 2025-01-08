@@ -46,11 +46,27 @@ export function getRandomItem<T>(items: T[]): T {
 
 export async function applyStealth(context: BrowserContext): Promise<void> {
     const userAgent = getRandomItem(USER_AGENTS);
-    const viewport = getRandomItem(VIEWPORT_SIZES);
+    const viewportSize = getRandomItem(VIEWPORT_SIZES);
     const webgl = getRandomItem(WEBGL_VENDORS);
     const cores = getRandomItem(CPU_CORES);
     const memory = getRandomItem(MEMORY_SIZES);
     const platform = getRandomItem(PLATFORMS);
+
+    // Set viewport in context options
+    await context.addInitScript(`
+        window.outerWidth = ${viewportSize.width};
+        window.outerHeight = ${viewportSize.height};
+        window.innerWidth = ${viewportSize.width};
+        window.innerHeight = ${viewportSize.height};
+        window.screen = {
+            width: ${viewportSize.width},
+            height: ${viewportSize.height},
+            availWidth: ${viewportSize.width},
+            availHeight: ${viewportSize.height},
+            colorDepth: 24,
+            pixelDepth: 24
+        };
+    `);
 
     // Set user agent and viewport
     await context.setExtraHTTPHeaders({
